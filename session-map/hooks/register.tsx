@@ -47,7 +47,7 @@ const KIND_NAME: Record<Kind, string> = {
   read: 'read',
   edit: 'edit',
   run: 'run',
-  web: 'web',
+  web: 'web & screen',
   agent: 'subagent',
   publish: 'publish',
   other: 'other',
@@ -61,6 +61,9 @@ const RESULT_MARK: Record<Result['kind'], string> = {
   script: '▶',
   doc: '▤',
 }
+
+// Housekeeping calls that say nothing about the work itself.
+const PLUMBING = new Set(['ToolSearch', 'Skill', 'TodoWrite', 'ReadNotifications', 'ListAgents'])
 
 let ticker: { cancel: () => void } | null = null
 
@@ -95,6 +98,7 @@ export const register: Register = on => {
   on('tool.call', async ($, e, next) => {
     const args = e as unknown as Record<string, unknown>
     const id = e.tool_use_id ?? `${e.tool}-${Date.now()}`
+    if (PLUMBING.has(e.tool)) return next(e)
     const kind = classify(e.tool, str(args.command))
     const label = describe(e.tool, args)
     const at = Date.now()
@@ -159,6 +163,8 @@ export const register: Register = on => {
           <Box flexDirection="column" gap={0}>
             <Svg
               source={ribbon(l.steps, l.turns, l.isWorking)}
+              width={ribbonWidth(l.steps)}
+              height={RIBBON_H}
               alt={`Activity ribbon: ${l.steps.length} actions over ${l.turns.length} requests`}
               isInteractive
             />
@@ -403,7 +409,7 @@ export function classify(tool: string, command: string): Kind {
   if (['Bash', 'PowerShell', 'Monitor'].includes(tool)) {
     return /\bgit\b[^|;&]*\bpush\b|\bgh\s+(pr|repo)\s+create\b/.test(command) ? 'publish' : 'run'
   }
-  if (['WebFetch', 'WebSearch'].includes(tool) || /^mcp__(claude-in-chrome|Claude_Browser)__/.test(tool)) return 'web'
+  if (['WebFetch', 'WebSearch'].includes(tool) || /^mcp__(claude-in-chrome|Claude_Browser|deskwright[\w-]*)__/.test(tool)) return 'web'
   if (['Agent', 'Task', 'Workflow'].includes(tool)) return 'agent'
   if (tool === 'Artifact') return 'publish'
   return 'other'
@@ -582,10 +588,22 @@ function readPlaces(paths: string[]): { root: string; names: string[] }[] {
 
 // One segment per tool call, coloured by kind, a gap and a dot at each new
 // request. Hovering a segment names the call; hovering a dot shows the request.
+// Drawn at its real pixel size: the desktop scales an Svg up to the slot
+// otherwise, which turned a short ribbon into big blocks.
+const RIBBON_W = 300
+const RIBBON_H = 34
+
+function ribbonWidth(steps: Step[]): number {
+  const shown = steps.slice(-180)
+  const breaks = shown.filter((s, i) => i > 0 && s.turn !== shown[i - 1]?.turn).length
+  const unit = Math.max(2.5, Math.min(14, (RIBBON_W - breaks * 7) / Math.max(1, shown.length)))
+  return Math.min(RIBBON_W, Math.ceil(shown.length * unit + breaks * 7 + 2))
+}
+
 export function ribbon(steps: Step[], turns: { n: number; text: string; at: number }[], isWorking: boolean): string {
   const shown = steps.slice(-180)
-  const W = 640
-  const H = 34
+  const W = RIBBON_W
+  const H = RIBBON_H
   const breaks = shown.filter((s, i) => i > 0 && s.turn !== shown[i - 1]?.turn).length
   const unit = Math.max(2.5, Math.min(14, (W - breaks * 7) / Math.max(1, shown.length)))
   const parts: string[] = []
@@ -606,7 +624,7 @@ export function ribbon(steps: Step[], turns: { n: number; text: string; at: numb
     )
     x += unit
   })
-  const width = Math.min(W, Math.ceil(x + 2))
+  const width = ribbonWidth(steps)
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${H}" viewBox="0 0 ${width} ${H}">${parts.join('')}</svg>`
 }
 
