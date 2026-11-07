@@ -105,3 +105,11 @@ test('paths are grouped by the place Tristan knows them by', () => {
   expect(place('/home/tristan/.claude/docs/harness.md')).toEqual({ root: 'Claude config', rel: 'docs/harness.md' })
   expect(place('/home/tristan/.config/Claude/scratch-workspaces/a/b/c/run.sh').root).toBe("This chat's folder")
 })
+
+test('a quiet commit is read from its message', () => {
+  const r = bashResults('cd ~/projects/x && git -c user.email=a@b commit -qm "fix the ribbon\n\nbody" && git push -q', '', 1)
+  expect(r.map(x => [x.kind, x.title])).toEqual([
+    ['commit', 'fix the ribbon'],
+    ['push', 'Pushed x'],
+  ])
+})

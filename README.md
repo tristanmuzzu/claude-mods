@@ -56,6 +56,9 @@ A pane beside the chat that answers three questions at a glance:
   Press a file to see its last edit as a diff.
 - **Looked at**: files it only read, folded away.
 
+Files changed through shell commands (a `sed -i`, a script) are not listed
+under Changed; only Claude's own edit and write tools are.
+
 It reads the session's own tool calls. It makes no model calls and no network
 requests and touches no files. `/map` opens it again if you close it.
 

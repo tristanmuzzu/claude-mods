@@ -452,9 +452,16 @@ export function bashResults(cmd: string, text: string, at: number): Result[] {
   const repo = repoOf(cmd)
 
   const commit = /\[([^\s\]]+)(?: \(root-commit\))? ([0-9a-f]{7,40})\] ([^\n]+)/.exec(text)
-  if (/\bgit\b[^|;&]*\bcommit\b/.test(cmd) && commit) {
-    out.push({ kind: 'commit', title: (commit[3] ?? '').trim(), detail: `${repo} · ${commit[1]} · ${commit[2]}`, href: null, at })
+  if (/\bgit\b[^|;&]*\bcommit\b/.test(cmd)) {
+    // A quiet commit (-q) prints nothing, so fall back to the message in the command.
+    const said = /\bcommit\b[^|;&]*?\s-[a-zA-Z]*m\s*(?:"([^"]*)"|'([^']*)')/.exec(cmd)
+    const message = commit ? (commit[3] ?? '').trim() : ((said?.[1] ?? said?.[2] ?? '').split('\n')[0] ?? '').trim()
+    if (message) {
+      const where = commit ? `${repo} · ${commit[1]} · ${commit[2]}` : repo
+      out.push({ kind: 'commit', title: message, detail: where, href: null, at })
+    }
   }
+
 
   if (/\bgit\b[^|;&]*\bpush\b/.test(cmd) && !/--dry-run|\s-n\b/.test(cmd)) {
     const to = /To (?:https:\/\/github\.com\/|git@github\.com:)([\w.-]+\/[\w.-]+?)(?:\.git)?\s/.exec(text)
