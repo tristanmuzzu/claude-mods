@@ -21,11 +21,31 @@ Context 134k of 400k before compact (34%)  ·  5h 23%, resets 15:40  ·  week 41
 It reads figures the engine pushes after each turn. It makes no model calls,
 no network requests and touches no files.
 
+## working-dot
+
+The desktop app's sidebar barely shows which chats are busy. This mod puts
+🟢 in front of a chat's title while Claude is working in it and takes it off
+when the turn ends:
+
+```text
+🟢 Fix login bug      <- working
+Fix login bug         <- idle
+```
+
+- It renames the chat through the app's own session tools, so it only acts
+  in sessions the desktop app hosts; in a plain terminal it does nothing.
+- A brand-new chat gets the dot about 5 seconds into its first turn, after the
+  app has named it.
+- A dot left over from a crash or restart is cleared when that chat starts again.
+- If the app refuses a rename (for example you decline one on a chat you
+  titled yourself), the mod stops renaming that chat until it restarts.
+
 ## Install
 
 ```bash
 claude plugin marketplace add ~/projects/claude-mods
 claude plugin install plan-meter@tristan-mods --scope user
+claude plugin install working-dot@tristan-mods --scope user
 ```
 
 Test: `claude plugin test plan-meter`.
