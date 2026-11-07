@@ -22,8 +22,8 @@ const LABEL: Record<string, string> = { five_hour: '5h', seven_day: 'week' }
 type RawLimit = { kind: string; percentUsed: number; resetsAt?: string }
 type RawContext = { tokens?: number; window: number }
 
-// The compaction point only changes with the model or the setting, so it is
-// read once per session start and again when the window size changes.
+// The compaction point changes with the model and with /autocompact, so it is
+// read again at every measurement ('summary' is local and free).
 let compactAt = 0
 let isCompactPoint = false
 let windowSeen = 0
@@ -74,7 +74,8 @@ export const register: Register = on => {
 }
 
 async function refreshCompactPoint($: EngineInterface, window: number) {
-  if (window === windowSeen && compactAt > 0) return
+  // Read every time: /autocompact changes the point without changing the
+  // window, and a cached value showed 367k long after it was set to 1M.
   windowSeen = window
   compactAt = window
   isCompactPoint = false
