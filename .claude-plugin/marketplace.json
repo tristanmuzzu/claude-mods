@@ -1,0 +1,11 @@
+{
+  "name": "tristan-mods",
+  "owner": { "name": "Tristan Rafe Muzzu" },
+  "plugins": [
+    {
+      "name": "plan-meter",
+      "source": "./plan-meter",
+      "description": "Context used against the real auto-compact point, and the 5-hour and weekly plan limits, in one line above the prompt."
+    }
+  ]
+}

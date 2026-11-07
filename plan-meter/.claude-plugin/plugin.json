@@ -1,0 +1,10 @@
+{
+  "name": "plan-meter",
+  "version": "0.1.0",
+  "description": "One line above the prompt: context used against the real auto-compact point, and the 5-hour and weekly plan limits with their reset times.",
+  "types": "./types/index.d.ts",
+  "license": "MIT",
+  "author": {
+    "name": "Tristan Rafe Muzzu"
+  }
+}
