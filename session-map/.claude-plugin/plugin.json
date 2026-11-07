@@ -1,7 +1,7 @@
 {
   "name": "session-map",
-  "version": "0.1.0",
-  "description": "A side pane that shows what Claude is doing now, which files it changed in which project, and what came out of the session.",
+  "version": "0.2.0",
+  "description": "An all-in-one side pane: what Claude is doing right now, context and plan limits, the files it touched with their git state, what it shipped, and your requests.",
   "license": "MIT",
   "types": "./types/index.d.ts"
 }

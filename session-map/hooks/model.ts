@@ -1,0 +1,397 @@
+// Pure functions: reading tool calls into the ledger, and the view model the
+// pane draws from. Nothing here touches `$`, so all of it is testable alone.
+
+import type { Kind, Ledger, Live, Repo, Result, Step, Touch } from '../types'
+
+export const EMPTY: Ledger = {
+  steps: [],
+  turns: [],
+  touches: [],
+  results: [],
+  live: [],
+  isWorking: false,
+  turnEndedAt: null,
+  repos: [],
+  vitals: null,
+  cwd: '',
+  model: '',
+}
+
+/** Housekeeping calls that say nothing about the work itself. */
+export const PLUMBING = new Set(['ToolSearch', 'Skill', 'TodoWrite', 'ReadNotifications', 'ListAgents', 'AskUserQuestion'])
+
+export function classify(tool: string, command: string): Kind {
+  if (['Read', 'Grep', 'Glob', 'LS', 'NotebookRead'].includes(tool)) return 'read'
+  if (['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].includes(tool)) return 'edit'
+  if (['Bash', 'PowerShell', 'Monitor'].includes(tool)) {
+    return /\bgit\b[^|;&]*\bpush\b|\bgh\s+(pr|repo)\s+create\b/.test(command) ? 'publish' : 'run'
+  }
+  if (['WebFetch', 'WebSearch'].includes(tool) || /^mcp__(claude-in-chrome|Claude_Browser|deskwright[\w-]*)__/.test(tool)) return 'web'
+  if (['Agent', 'Task', 'Workflow'].includes(tool)) return 'agent'
+  if (tool === 'Artifact') return 'publish'
+  return 'other'
+}
+
+export function describe(tool: string, a: Record<string, unknown>): string {
+  const path = pathOf(a)
+  switch (tool) {
+    case 'Bash':
+      return str(a.description) || clip(str(a.command), 70)
+    case 'Read':
+      return `Reading ${base(path)}`
+    case 'Edit':
+    case 'MultiEdit':
+      return `Editing ${base(path)}`
+    case 'Write':
+      return `Writing ${base(path)}`
+    case 'Grep':
+      return `Searching for "${clip(str(a.pattern), 32)}"`
+    case 'Glob':
+      return `Finding ${clip(str(a.pattern), 40)}`
+    case 'WebFetch':
+      return `Opening ${host(str(a.url))}`
+    case 'WebSearch':
+      return `Searching the web: ${clip(str(a.query), 44)}`
+    case 'Agent':
+    case 'Task':
+      return `Helper: ${clip(str(a.description) || str(a.subagent_type) || 'task', 56)}`
+    case 'Artifact':
+      return `Publishing ${str(a.title) || base(str(a.file_path)) || 'a page'}`
+  }
+  if (/^mcp__deskwright/.test(tool)) return `Desktop: ${tool.replace(/^mcp__[^_]+(?:-[a-z]+)?__/, '').replace(/_/g, ' ')}`
+  if (/^mcp__(claude-in-chrome|Claude_Browser)__/.test(tool)) return `Browser: ${tool.replace(/^mcp__[^_]+__/, '').replace(/_/g, ' ')}`
+  const mcp = /^mcp__(.+?)__(.+)$/.exec(tool)
+  if (mcp) return `${(mcp[1] ?? '').replace(/^[0-9a-f-]{20,}$/, 'connector').replace(/^ccd_/, 'app ')}: ${(mcp[2] ?? '').replace(/_/g, ' ')}`
+  return tool
+}
+
+export function pathOf(a: Record<string, unknown>): string {
+  return str(a.file_path) || str(a.notebook_path)
+}
+
+type Settle = {
+  id: string
+  tool: string
+  args: Record<string, unknown>
+  kind: Kind
+  label: string
+  at: number
+  ok: boolean
+  text: string
+  agent: string | null
+}
+
+export function begin(l: Ledger, live: Live): Ledger {
+  return { ...l, live: [...l.live.filter(x => x.id !== live.id), live].slice(-24) }
+}
+
+export function settle(l: Ledger, s: Settle, now: number): Ledger {
+  let kind = s.kind
+  let results = l.results
+  let touches = l.touches
+  const path = pathOf(s.args)
+
+  if (s.ok && path) {
+    if (s.tool === 'Read') {
+      touches = touch(touches, path, { reads: 1 }, s.at)
+    } else if (s.tool === 'Edit') {
+      touches = touch(touches, path, edit(str(s.args.old_string), str(s.args.new_string), path), s.at)
+    } else if (s.tool === 'MultiEdit' && Array.isArray(s.args.edits)) {
+      for (const one of s.args.edits as Record<string, unknown>[]) {
+        touches = touch(touches, path, edit(str(one.old_string), str(one.new_string), path), s.at)
+      }
+    } else if (s.tool === 'Write') {
+      const isNew = /created/i.test(s.text)
+      const lines = splitLines(str(s.args.content))
+      touches = touch(
+        touches,
+        path,
+        isNew ? { edits: 1, added: lines.length, isNew: true, diff: newFileDiff(lines, path) } : { edits: 1 },
+        s.at,
+      )
+      const made = createdResult(path, isNew, s.at)
+      if (made) results = addResult(results, made)
+    } else if (s.tool === 'NotebookEdit') {
+      touches = touch(touches, path, { edits: 1 }, s.at)
+    }
+  }
+  if (s.ok && s.tool === 'Bash') {
+    const found = bashResults(str(s.args.command), s.text, s.at)
+    if (found.length) kind = 'publish'
+    for (const r of found) results = addResult(results, r)
+  }
+  if (s.ok && s.tool === 'Artifact') {
+    const href = /https:\/\/claude\.ai\/[^\s"'<>)\]]*artifact[^\s"'<>)\]]*/.exec(s.text)?.[0] ?? null
+    if (href) {
+      const title = str(s.args.title) || base(str(s.args.file_path)).replace(/\.[a-z]+$/i, '') || 'Artifact'
+      results = addResult(results, { kind: 'artifact', title, detail: 'Artifact page', href, run: null, at: s.at })
+    }
+  }
+
+  const step: Step = {
+    kind,
+    at: s.at,
+    ms: Math.max(0, now - s.at),
+    turn: l.turns.length,
+    label: s.ok ? s.label : `${s.label} (failed)`,
+    agent: s.agent,
+  }
+  return {
+    ...l,
+    steps: [...l.steps, step].slice(-800),
+    live: l.live.filter(x => x.id !== s.id),
+    touches,
+    results,
+  }
+}
+
+type TouchDelta = Partial<Pick<Touch, 'reads' | 'edits' | 'added' | 'removed' | 'isNew' | 'diff'>>
+
+function touch(list: Touch[], path: string, d: TouchDelta, at: number): Touch[] {
+  const old = list.find(t => t.path === path)
+  const merged: Touch = {
+    path,
+    reads: (old?.reads ?? 0) + (d.reads ?? 0),
+    edits: (old?.edits ?? 0) + (d.edits ?? 0),
+    added: (old?.added ?? 0) + (d.added ?? 0),
+    removed: (old?.removed ?? 0) + (d.removed ?? 0),
+    isNew: Boolean(old?.isNew || d.isNew),
+    at,
+    diff: d.diff || old?.diff || '',
+  }
+  return [...list.filter(t => t.path !== path), merged].slice(-400)
+}
+
+export function addResult(results: Result[], r: Result): Result[] {
+  const same = (x: Result) => x.kind === r.kind && (r.href ? x.href === r.href : x.title === r.title && x.detail === r.detail)
+  return [...results.filter(x => !same(x)), r].slice(-60)
+}
+
+export function bashResults(cmd: string, text: string, at: number): Result[] {
+  const out: Result[] = []
+  if (/\b(rejected|fatal:|error:)/i.test(text) && /\b(push|create)\b/.test(cmd)) return out
+  if (/\bgh\s+pr\s+create\b/.test(cmd)) {
+    const m = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/.exec(text)
+    if (m) out.push({ kind: 'pr', title: `Pull request in ${m[0].split('/')[4]}`, detail: m[0].replace('https://', ''), href: m[0], run: null, at })
+  }
+  if (/\bgh\s+repo\s+create\b/.test(cmd)) {
+    const m = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+/.exec(text)
+    if (m) out.push({ kind: 'repo', title: `New repo ${m[0].split('/')[4]}`, detail: m[0].replace('https://', ''), href: m[0], run: null, at })
+  }
+  return out
+}
+
+function createdResult(path: string, isNew: boolean, at: number): Result | null {
+  if (!isNew) return null
+  const p = place(path)
+  if (/\.sh$/.test(path)) {
+    return { kind: 'script', title: base(path), detail: p.root, href: null, run: `bash ${quote(path)}`, at }
+  }
+  if (/\.(html|pdf|docx|xlsx|pptx|png|svg|mp4|gif)$/i.test(path) && !/\/(src|hooks|tests?|node_modules)\//.test(path)) {
+    return { kind: 'doc', title: base(path), detail: p.root, href: null, run: null, at }
+  }
+  return null
+}
+
+// ---------------------------------------------------------------- diffs
+
+function edit(oldS: string, newS: string, path: string): TouchDelta {
+  const a = splitLines(oldS)
+  const b = splitLines(newS)
+  let s = 0
+  while (s < a.length && s < b.length && a[s] === b[s]) s++
+  let e = 0
+  while (e < a.length - s && e < b.length - s && a[a.length - 1 - e] === b[b.length - 1 - e]) e++
+  const del = a.slice(s, a.length - e)
+  const add = b.slice(s, b.length - e)
+  const before = a.slice(Math.max(0, s - 2), s)
+  const after = a.slice(a.length - e, Math.min(a.length, a.length - e + 2))
+  const showDel = del.slice(0, 30)
+  const showAdd = add.slice(0, 30)
+  const oldCount = before.length + showDel.length + after.length
+  const newCount = before.length + showAdd.length + after.length
+  const diff = [
+    `--- a/${base(path)}`,
+    `+++ b/${base(path)}`,
+    `@@ -1,${oldCount} +1,${newCount} @@`,
+    ...before.map(x => ` ${x}`),
+    ...showDel.map(x => `-${x}`),
+    ...showAdd.map(x => `+${x}`),
+    ...after.map(x => ` ${x}`),
+  ].join('\n')
+  return { edits: 1, added: add.length, removed: del.length, diff: oldCount + newCount > 0 ? diff : '' }
+}
+
+function newFileDiff(lines: string[], path: string): string {
+  const shown = lines.slice(0, 40)
+  if (!shown.length) return ''
+  return [`--- /dev/null`, `+++ b/${base(path)}`, `@@ -0,0 +1,${shown.length} @@`, ...shown.map(x => `+${x}`)].join('\n')
+}
+
+// ---------------------------------------------------------------- places
+
+export function place(path: string): { root: string; rel: string } {
+  const p = path.replace(/^\/home\/[^/]+/, '~')
+  let m: RegExpExecArray | null
+  if ((m = /^~\/projects\/([^/]+)\/(.*)$/.exec(p))) return { root: m[1] ?? '', rel: m[2] ?? '' }
+  if ((m = /^~\/\.config\/Claude\/scratch-workspaces\/[^/]+\/[^/]+\/[^/]+\/(.*)$/.exec(p))) return { root: "This chat's folder", rel: m[1] ?? '' }
+  if ((m = /^\/tmp\/claude-\d+\/[^/]+\/[^/]+\/scratchpad\/(.*)$/.exec(p))) return { root: 'Scratchpad', rel: m[1] ?? '' }
+  if ((m = /^~\/\.claude\/dev-mods\/[^/]+\/(.*)$/.exec(p))) return { root: 'Mods in progress', rel: m[1] ?? '' }
+  if ((m = /^~\/\.claude\/(.*)$/.exec(p))) return { root: 'Claude config', rel: m[1] ?? '' }
+  if ((m = /^~\/(Documents|Desktop|Downloads)\/([^/]+)\/(.*)$/.exec(p))) return { root: m[2] ?? '', rel: m[3] ?? '' }
+  const i = p.lastIndexOf('/')
+  return { root: i > 0 ? p.slice(0, i) : p, rel: p.slice(i + 1) }
+}
+
+export function prettyDir(path: string): string {
+  return path.replace(/^\/home\/[^/]+/, '~')
+}
+
+// ---------------------------------------------------------------- file states
+
+export type FileState = 'reading' | 'editing' | 'new' | 'uncommitted' | 'committed' | 'pushed' | 'changed' | 'read'
+
+export type FileRow = {
+  path: string
+  name: string
+  dir: string
+  project: string
+  state: FileState
+  added: number
+  removed: number
+  at: number
+  isShell: boolean
+  diff: string
+  repo: Repo | null
+}
+
+/** Every file worth showing: Claude's own touches plus files git says changed since the map started. */
+export function fileRows(l: Ledger): FileRow[] {
+  const rows: Record<string, FileRow> = {}
+  const liveOn: Record<string, 'reading' | 'editing'> = {}
+  for (const x of l.live) if (x.path) liveOn[x.path] = x.kind === 'edit' ? 'editing' : 'reading'
+
+  const repoFor = (path: string) =>
+    l.repos.filter(r => path === r.root || path.startsWith(`${r.root}/`)).sort((a, b) => b.root.length - a.root.length)[0] ?? null
+
+  const make = (path: string, at: number, isShell: boolean, t: Touch | null): FileRow => {
+    const repo = repoFor(path)
+    const rel = repo ? path.slice(repo.root.length + 1) : place(path).rel
+    const cut = rel.lastIndexOf('/')
+    const git = repo?.files.find(f => f.rel === rel) ?? null
+    const wasDirty = repo?.baseline.includes(rel) ?? false
+    let state: FileState
+    let added = t?.added ?? 0
+    let removed = t?.removed ?? 0
+    if (liveOn[path]) state = liveOn[path]
+    else if (git) {
+      state = git.code.includes('?') || git.code.includes('A') ? 'new' : 'uncommitted'
+      if (!wasDirty) {
+        added = git.added
+        removed = git.removed
+      }
+    } else if (repo && (t?.edits ?? 0) > 0) {
+      state = repo.commits.some(c => c.at * 1000 >= (t?.at ?? 0) - 120_000) || repo.commits.length > 0
+        ? repo.hasUpstream && repo.ahead === 0
+          ? 'pushed'
+          : 'committed'
+        : 'changed'
+    } else if ((t?.edits ?? 0) > 0) state = t?.isNew ? 'new' : 'changed'
+    else state = 'read'
+    return {
+      path,
+      name: cut >= 0 ? rel.slice(cut + 1) : rel,
+      dir: cut >= 0 ? rel.slice(0, cut) : '',
+      project: repo ? repo.name : place(path).root,
+      state,
+      added,
+      removed,
+      at,
+      isShell,
+      diff: t?.diff ?? '',
+      repo,
+    }
+  }
+
+  for (const t of l.touches) rows[t.path] = make(t.path, t.at, false, t)
+  for (const x of l.live) if (x.path && !rows[x.path]) rows[x.path] = make(x.path, x.at, false, null)
+  for (const r of l.repos) {
+    for (const f of r.files) {
+      if (r.baseline.includes(f.rel)) continue
+      const path = `${r.root}/${f.rel}`
+      if (!rows[path]) rows[path] = make(path, r.scannedAt, true, null)
+    }
+  }
+  const rank: Record<FileState, number> = { editing: 0, reading: 0, new: 1, uncommitted: 1, changed: 1, committed: 2, pushed: 2, read: 3 }
+  return Object.values(rows).sort((a, b) => rank[a.state] - rank[b.state] || b.at - a.at)
+}
+
+// ---------------------------------------------------------------- requests
+
+export type RequestRow = {
+  n: number
+  text: string
+  at: number
+  ms: number | null
+  counts: Partial<Record<Kind, number>>
+  isNow: boolean
+}
+
+export function requestRows(l: Ledger, now: number): RequestRow[] {
+  return l.turns.map((t, i) => {
+    const counts: Partial<Record<Kind, number>> = {}
+    for (const s of l.steps) if (s.turn === t.n) counts[s.kind] = (counts[s.kind] ?? 0) + 1
+    const isNow = i === l.turns.length - 1 && l.isWorking
+    return { n: t.n, text: t.text, at: t.at, ms: t.endedAt ? t.endedAt - t.at : isNow ? now - t.at : null, counts, isNow }
+  })
+}
+
+// ---------------------------------------------------------------- small helpers
+
+export function str(v: unknown): string {
+  return typeof v === 'string' ? v : ''
+}
+
+export function base(p: string): string {
+  const i = p.lastIndexOf('/')
+  return i >= 0 ? p.slice(i + 1) : p
+}
+
+export function host(url: string): string {
+  return /^https?:\/\/([^/]+)/.exec(url)?.[1] ?? clip(url, 40)
+}
+
+export function clip(s: string, n: number): string {
+  const one = s.replace(/\s+/g, ' ').trim()
+  return one.length > n ? `${one.slice(0, n - 1)}…` : one
+}
+
+export function splitLines(s: string): string[] {
+  if (!s) return []
+  const lines = s.split('\n')
+  if (lines[lines.length - 1] === '') lines.pop()
+  return lines
+}
+
+function quote(p: string): string {
+  return /^[\w@%+=:,./~-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`
+}
+
+export function clock(t: number): string {
+  const d = new Date(t)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+export function since(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, '0')}s`
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
+}
+
+export function short(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M`
+  if (n >= 1000) return `${Math.round(n / 1000)}k`
+  return String(n)
+}

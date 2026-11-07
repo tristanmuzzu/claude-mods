@@ -42,25 +42,36 @@ Fix login bug         <- idle
 
 ## session-map
 
-A pane beside the chat that answers three questions at a glance:
+One pane beside the chat that holds everything worth watching, so the
+built-in side panel can stay closed. Top to bottom:
 
-- **Now**: whether Claude is working, your last request, and the calls still
-  running with how long each has taken.
-- **Activity ribbon**: one coloured segment per tool call (read, edit, run,
-  web, subagent, publish), with a gap and a dot at each of your requests.
-  Hover a segment for the call, a dot for the request. The newest segment
-  pulses while Claude works.
-- **Results**: commits, pushes, pull requests, new repos, published artifacts
-  and new scripts, newest first, linked where there is a URL.
-- **Changed**: files Claude edited, grouped by project, with line counts.
-  Press a file to see its last edit as a diff.
-- **Looked at**: files it only read, folded away.
+- **Right now**: an animated icon acts out what Claude is doing (an eye
+  scanning while it reads, a pencil writing while it edits, a blinking
+  terminal while a command runs, a turning globe for web and screen work,
+  orbiting dots for helpers, bouncing dots while it thinks, a check when it is
+  done), with the step in plain words, how long it has taken, any helpers
+  working, your last request, and the branch with commits ahead and files not
+  committed. When a request finishes it sums it up: files changed, commits,
+  how long it took.
+- **Vitals**: rings for context before auto-compaction, the 5-hour limit and
+  the weekly limit, with reset times.
+- **Activity**: one bar per step, coloured by kind (read, edit, run, web and
+  screen, helpers, publish), taller for slower steps, grouped by request.
+  Hover a bar for the step, a dot for the request.
+- **Claude touched**: every file Claude read or changed, with a file-type
+  badge, folder, lines added and removed, and its state from git: reading,
+  editing, new, not committed, committed, pushed. Files changed by shell
+  commands show up too. Press a file for its diff.
+- **Shipped**: the commits made since the session started and whether they
+  are pushed, plus published pages, pull requests, new repos and new scripts
+  (with a button that copies the command to run them).
+- **Your requests**: each request with how long it took and what it did.
+- **Files**: the project tree; folders holding changed files open by
+  themselves and say how many changed or were committed.
 
-Files changed through shell commands (a `sed -i`, a script) are not listed
-under Changed; only Claude's own edit and write tools are.
-
-It reads the session's own tool calls. It makes no model calls and no network
-requests and touches no files. `/map` opens it again if you close it.
+It reads the session's own tool calls and runs read-only git commands
+(`status`, `diff`, `log`, `ls-files`). It makes no model calls and no network
+requests and writes no files. `/map` opens it again if you close it.
 
 ## Install
 

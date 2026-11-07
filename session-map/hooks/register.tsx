@@ -1,77 +1,92 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { Change, Kind, Ledger, Live, Result, Step, View } from '../types'
+import type { Kind, Ledger, Probe, Repo, Tree, View } from '../types'
+import { badge, DONE, glyph, INK, KIND_NAME, liveDot, moodColor, ribbon, rings, THINK } from './art'
+import type { Mood } from './art'
+import { diffOf, gitTrouble, listFiles, rootOf, scan } from './git'
+import {
+  begin,
+  clip,
+  clock,
+  classify,
+  describe,
+  EMPTY,
+  fileRows,
+  pathOf,
+  place,
+  PLUMBING,
+  prettyDir,
+  requestRows,
+  settle,
+  short,
+  since,
+  str,
+} from './model'
+import type { FileRow, FileState } from './model'
 
-// A side pane that answers three questions at a glance:
-//   What is Claude doing right now?           (Now, and the ribbon)
-//   What came out of this session?            (Results: commits, pushes, artifacts, scripts)
-//   Which files did it change, and where?     (Changed, grouped by project)
-// Everything comes from the session's own tool calls; nothing polls, nothing
-// leaves the machine. Helpers that take $ are top-level functions because the
-// host reads `$.noun.method(...)` from source.
+// One pane beside the chat that holds everything worth watching:
+//   Right now     what Claude is doing, acted out by the glyph, and its helpers
+//   Vitals        context before compaction, the 5-hour and weekly plan limits
+//   Activity      every tool call as a bar, coloured by kind, sized by time
+//   Touched       the files Claude read or changed, with their git state
+//   Shipped       commits, pushes, pages, pull requests, scripts to run
+//   Requests      what you asked, how long it took, what it did
+//   Files         the project tree, folders rolled up by what changed
+// It reads the session's own tool calls and runs read-only git commands.
+// Helpers that take $ are top-level functions: the host reads `$.noun.method`
+// from source.
 
 const PANE = 'session-map'
 const TITLE = 'Session map'
 
-const EMPTY: Ledger = {
-  steps: [],
-  turns: [],
-  changes: [],
-  reads: [],
-  results: [],
-  live: [],
-  isWorking: false,
-  turnEndedAt: null,
-}
-// Change the shape tag when Ledger's fields change: it drops what an older
-// version stored, which outlives a reload.
-const ledger = atom({ plugin: 'session-map', key: 'ledger' } as const, EMPTY, { shape: 'ledger-1' })
-const view = atom({ plugin: 'session-map', key: 'view' } as const, {
+const ledger = atom({ plugin: 'session-map', key: 'ledger' } as const, EMPTY, { shape: 'ledger-2' })
+const tree = atom({ plugin: 'session-map', key: 'tree' } as const, { root: '', files: [], at: 0 } as Tree, { shape: 'tree-1' })
+const VIEW0: View = {
   openPath: null,
+  openDiff: null,
   showReads: false,
+  showTree: true,
+  openDirs: [],
+  closedDirs: [],
+  showAllRequests: false,
   tick: 0,
-} as View)
+  copied: null,
+}
+const view = atom({ plugin: 'session-map', key: 'view' } as const, VIEW0, { shape: 'view-2' })
+const probe = atom({ plugin: 'session-map', key: 'probe' } as const, null as Probe | null)
 
-// Mid-tone colours that read on both the dark and the light theme.
-const INK: Record<Kind, string> = {
-  read: '#6f8fe8',
-  edit: '#e0875a',
-  run: '#3fae9f',
-  web: '#9d84e6',
-  agent: '#cfa94a',
-  publish: '#56b86a',
-  other: '#80868f',
-}
-const KIND_NAME: Record<Kind, string> = {
-  read: 'read',
-  edit: 'edit',
-  run: 'run',
-  web: 'web & screen',
-  agent: 'subagent',
-  publish: 'publish',
-  other: 'other',
-}
-const RESULT_MARK: Record<Result['kind'], string> = {
-  commit: '◆',
-  push: '↑',
-  artifact: '◎',
-  pr: '⇄',
-  repo: '▣',
-  script: '▶',
-  doc: '▤',
+const STATE_STYLE: Record<FileState, { label: string; fg: string; bg: string }> = {
+  reading: { label: 'reading', fg: INK.read, bg: '#2c2546' },
+  editing: { label: 'editing', fg: INK.edit, bg: '#3d2c17' },
+  new: { label: 'new', fg: '#7fe0a0', bg: '#1d3526' },
+  uncommitted: { label: 'not committed', fg: '#e9c46a', bg: '#383019' },
+  changed: { label: 'changed', fg: INK.edit, bg: '#3d2c17' },
+  committed: { label: 'committed', fg: DONE, bg: '#1d3524' },
+  pushed: { label: 'pushed', fg: '#6fd3c6', bg: '#183330' },
+  read: { label: 'read', fg: '#8d939c', bg: '#2a2b2e' },
 }
 
-// Housekeeping calls that say nothing about the work itself.
-const PLUMBING = new Set(['ToolSearch', 'Skill', 'TodoWrite', 'ReadNotifications', 'ListAgents'])
+const CARD = '#262729'
+const EDGE = '#34363a'
 
 let ticker: { cancel: () => void } | null = null
+let pending: { cancel: () => void } | null = null
+let lastError = ''
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
-    await $.command.register({ name: 'map', description: 'Open the session map pane' })
+    await $.command.register({ name: 'map', description: 'Open the session map pane' }).catch(() => undefined)
+    await $.tool
+      .register({
+        name: 'inspect',
+        description: 'Session map development probe: how the pane was last drawn (surface, width, placement).',
+        isDeferred: true,
+      })
+      .catch(() => undefined)
     void $.ui.open({ id: PANE, title: TITLE })
+    await boot($)
     return result
   })
 
@@ -80,31 +95,48 @@ export const register: Register = on => {
     return { text: opened.isPlaced ? 'Session map opened.' : `Session map is waiting for room: ${opened.reason}` }
   })
 
+  on('tool.call', { tool: 'mcp__session-map__inspect' }, async $ => {
+    const p = await read($, probe)
+    const l = await read($, ledger)
+    return {
+      result: JSON.stringify({ lastError, git: gitTrouble.last, probe: p, vitals: l.vitals, cwd: l.cwd, repos: l.repos.map(r => ({ root: r.root, files: r.files.length, commits: r.commits.length, ahead: r.ahead })), steps: l.steps.length, touches: l.touches.length, others: l.steps.filter(x => x.kind === 'other').map(x => x.label) }),
+    }
+  })
+
+  on('session.measure', async ($, e, next) => {
+    await vitals($, e.context as RawContext, e.rateLimits as RawLimit[]).catch(() => undefined)
+    return next(e)
+  })
+
   on('prompt.submit', async ($, e, next) => {
     if (!e.isMeta && !e.command && e.text.trim()) await noteRequest($, e.text).catch(() => undefined)
     return next(e)
   })
 
   on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined) await setWorking($, true)
+    if (e.agentId === undefined) await setWorking($, true).catch(() => undefined)
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined) await setWorking($, false)
+    if (e.agentId === undefined) {
+      await setWorking($, false).catch(() => undefined)
+      soon($)
+    }
     return next(e)
   })
 
   on('tool.call', async ($, e, next) => {
+    // App housekeeping (other mods rename chats through mcp__ccd_*) is not the work.
+    if (PLUMBING.has(e.tool) || e.tool.startsWith('mcp__session-map__') || e.tool.startsWith('mcp__ccd_')) return next(e)
     const args = e as unknown as Record<string, unknown>
     const id = e.tool_use_id ?? `${e.tool}-${Date.now()}`
-    if (PLUMBING.has(e.tool)) return next(e)
     const kind = classify(e.tool, str(args.command))
     const label = describe(e.tool, args)
     const at = Date.now()
-    await safely($, l => ({ ...l, live: [...l.live.filter(x => x.id !== id), { id, kind, label, at }].slice(-20) })).catch(
-      () => undefined,
-    )
+    const path = pathOf(args) || null
+    const agent = e.agentId ?? null
+    await safely($, l => begin(l, { id, kind, label, at, path, agent })).catch(() => undefined)
 
     let ran: Awaited<ReturnType<typeof next>> | null = null
     try {
@@ -113,7 +145,11 @@ export const register: Register = on => {
     } finally {
       const ok = ran !== null && !ran.deny && !ran.isError
       const text = ran && typeof ran.text === 'string' ? ran.text : ''
-      await safely($, l => settle(l, { id, tool: e.tool, args, kind, label, at, ok, text })).catch(() => undefined)
+      await safely($, l => settle(l, { id, tool: e.tool, args, kind, label, at, ok, text, agent }, Date.now())).catch(
+        () => undefined,
+      )
+      if (path) void adopt($, path)
+      if (kind === 'edit' || kind === 'run' || kind === 'publish') soon($)
     }
   })
 
@@ -123,184 +159,492 @@ export const register: Register = on => {
     const Svg = 'Svg' in els ? els.Svg : null
     const l = await read($, ledger)
     const v = await read($, view)
+    const t = await read($, tree)
     const now = Date.now()
+    // Desktop columns are about 11px; the cards take their padding and border out of that.
+    const W = Math.max(220, Math.round((e.props.bodyColumns ?? 33) * 11 - 100))
+    void note($, { surface: e.surface, bodyColumns: e.props.bodyColumns, placement: e.props.placement, at: now })
 
-    const groups = groupChanges(l.changes)
-    const kindsSeen = (Object.keys(INK) as Kind[]).filter(k => l.steps.some(s => s.kind === k))
-    const results = [...l.results].sort((a, b) => b.at - a.at)
-    const lastRequest = l.turns[l.turns.length - 1]
+    const rows = fileRows(l)
+    const changed = rows.filter(r => r.state !== 'read')
+    const onlyRead = rows.filter(r => r.state === 'read')
+    const requests = requestRows(l, now)
+    const mainRepo = pickMain(l)
+    const live = [...l.live].reverse()
+    const mainLive = live.find(x => x.agent === null) ?? null
+    const helpers = live.filter(x => x.agent !== null || x.kind === 'agent')
+    const last = l.turns[l.turns.length - 1]
+
+    // ---------------- right now
+    let mood: Mood = 'ready'
+    let eyebrow = 'Ready'
+    let headline = 'Waiting for your first request'
+    let subline = ''
+    if (l.isWorking && mainLive) {
+      mood = mainLive.kind
+      eyebrow = 'Right now'
+      headline = mainLive.label
+      subline = `${mainLive.path ? `${place(mainLive.path).root} · ` : ''}${since(now - mainLive.at)}`
+    } else if (l.isWorking) {
+      mood = 'thinking'
+      eyebrow = 'Thinking'
+      headline = 'Working out the next step'
+      subline = last ? `${since(now - last.at)} since you asked` : ''
+    } else if (l.steps.length) {
+      mood = 'done'
+      eyebrow = 'Done'
+      const turnSteps = last ? l.steps.filter(s => s.turn === last.n) : []
+      const edits = new Set(rows.filter(r => r.state !== 'read' && last && r.at >= last.at).map(r => r.path)).size
+      const commits = l.repos.reduce((n, r) => n + r.commits.filter(c => last && c.at * 1000 >= last.at).length, 0)
+      headline =
+        [edits ? `Changed ${edits} file${edits === 1 ? '' : 's'}` : '', commits ? `${commits} commit${commits === 1 ? '' : 's'}` : '']
+          .filter(Boolean)
+          .join(' · ') || (turnSteps.length ? `${turnSteps.length} step${turnSteps.length === 1 ? '' : 's'}, no file changes` : 'Answered')
+      subline = last?.endedAt ? `took ${since(last.endedAt - last.at)} · finished ${clock(last.endedAt)}` : ''
+    }
+    const tint = moodColor(mood)
+
+    const card = (key: string, children: RenderChildren) => (
+      <Box key={key} flexDirection="column" gap={1} padding={1} backgroundColor={CARD} borderStyle="round" borderColor={EDGE}>
+        {children}
+      </Box>
+    )
+    const heading = (title: string, note: string) => (
+      <Text weight="semibold">
+        {title}
+        <Text dimColor weight="regular">{note ? `   ${note}` : ''}</Text>
+      </Text>
+    )
 
     return (
       <Box flexDirection="column" gap={1} paddingX={1} paddingY={1}>
-        <Box flexDirection="column" gap={0}>
-          <Text size="heading" weight="semibold" color={l.isWorking ? 'claude' : 'text'}>
-            {l.isWorking ? 'Working' : l.steps.length ? 'Idle' : 'Nothing yet'}
-            <Text dimColor weight="regular">
-              {l.isWorking && lastRequest ? `  ${since(lastRequest.at, now)}` : ''}
-              {!l.isWorking && l.turnEndedAt ? `  finished ${clock(l.turnEndedAt)}` : ''}
-            </Text>
-          </Text>
-          {lastRequest && (
-            <Text dimColor wrap="truncate-end">
-              You asked: {lastRequest.text}
-            </Text>
-          )}
-          {l.isWorking &&
-            [...l.live]
-              .reverse()
-              .slice(0, 3)
-              .map(x => (
-                <Text key={`live:${x.id}`} wrap="truncate-end">
-                  <Text color={INK[x.kind]}>● </Text>
-                  {x.label}
-                  <Text dimColor>{`  ${since(x.at, now)}`}</Text>
+        {card(
+          'now',
+          <Box flexDirection="column" gap={1}>
+            <Box flexDirection="row" gap={1} alignItems="center">
+              {Svg && <Svg source={glyph(mood, l.isWorking)} width={64} height={64} alt={`${eyebrow}: ${headline}`} isInteractive />}
+              <Box flexDirection="column" flexShrink={1}>
+                <Text size="caption" weight="bold" color={tint}>
+                  {eyebrow.toUpperCase()}
                 </Text>
-              ))}
-          {!l.steps.length && <Text dimColor>Activity, changed files and results show up here as Claude works.</Text>}
-        </Box>
-
-        {l.steps.length > 0 && Svg && (
-          <Box flexDirection="column" gap={0}>
-            <Svg
-              source={ribbon(l.steps, l.turns, l.isWorking)}
-              width={ribbonWidth(l.steps)}
-              height={RIBBON_H}
-              alt={`Activity ribbon: ${l.steps.length} actions over ${l.turns.length} requests`}
-              isInteractive
-            />
-            <Text size="caption" dimColor>
-              {kindsSeen.map(k => (
-                <Text key={`legend:${k}`}>
-                  <Text color={INK[k]}>■</Text>
-                  {` ${KIND_NAME[k]} ${count(l.steps, k)}   `}
+                <Text size="heading" weight="semibold" wrap="wrap">
+                  {headline}
                 </Text>
-              ))}
-            </Text>
-          </Box>
-        )}
-
-        {results.length > 0 && (
-          <Box flexDirection="column" gap={0}>
-            <Heading Text={Text} title="Results" note={`${results.length}`} />
-            {results.slice(0, 12).map(r => (
-              <Box key={`result:${r.kind}:${r.title}:${r.detail}`} flexDirection="row" gap={1}>
-                <Text color={r.kind === 'push' || r.kind === 'repo' ? 'success' : 'claude'}>{RESULT_MARK[r.kind]}</Text>
-                <Box flexDirection="column" flexShrink={1}>
-                  {r.href ? (
-                    <Link href={r.href}>{r.title}</Link>
-                  ) : (
-                    <Text wrap="truncate-end">{r.title}</Text>
-                  )}
-                  <Text size="caption" dimColor wrap="truncate-end">
-                    {r.detail} · {clock(r.at)}
+                {subline ? (
+                  <Text size="footnote" dimColor>
+                    {subline}
                   </Text>
-                </Box>
+                ) : null}
+              </Box>
+            </Box>
+            {helpers.slice(0, 3).map(h => (
+              <Box key={`helper:${h.id}`} flexDirection="row" gap={1} alignItems="center">
+                {Svg && <Svg source={liveDot(INK.agent)} width={10} height={10} alt="helper working" />}
+                <Text size="footnote" wrap="truncate-end">
+                  <Text color={INK.agent}>Helper </Text>
+                  {h.label}
+                  <Text dimColor>{`  ${since(now - h.at)}`}</Text>
+                </Text>
               </Box>
             ))}
-          </Box>
+            {last ? (
+              <Text size="footnote" dimColor wrap="wrap">
+                {`You asked: ${clip(last.text, 140)}`}
+              </Text>
+            ) : null}
+            {mainRepo ? (
+              <Text size="footnote" wrap="truncate-end">
+                <Text color="#9aa0a6">{'⎇ '}</Text>
+                <Text weight="semibold">{mainRepo.branch}</Text>
+                {mainRepo.ahead ? <Text color={DONE}>{`  ↑${mainRepo.ahead}`}</Text> : null}
+                {mainRepo.behind ? <Text color="#e9c46a">{`  ↓${mainRepo.behind}`}</Text> : null}
+                <Text dimColor>{`   ${mainRepo.name} · ${repoSummary(mainRepo)}`}</Text>
+              </Text>
+            ) : null}
+          </Box>,
         )}
 
-        {groups.length > 0 && (
-          <Box flexDirection="column" gap={1}>
-            <Heading
-              Text={Text}
-              title="Changed"
-              note={`${l.changes.length} file${l.changes.length === 1 ? '' : 's'} in ${groups.length} place${groups.length === 1 ? '' : 's'}`}
-            />
-            {groups.map(g => (
-              <Box key={`group:${g.root}`} flexDirection="column" gap={0}>
-                <Text weight="medium" wrap="truncate-end">
-                  {g.root}
-                  <Text dimColor weight="regular">
-                    {'  '}
-                  </Text>
-                  <Text color="diffAdded" weight="regular">{`+${g.added}`}</Text>
-                  <Text dimColor weight="regular">{' '}</Text>
-                  <Text color="diffRemoved" weight="regular">{`−${g.removed}`}</Text>
-                </Text>
-                {g.files.map(f => (
-                  <Box key={`file:${f.change.path}`} flexDirection="column" gap={0}>
-                    <Button key={`open:${f.change.path}`} plain onPress={() => toggleFile($, f.change.path)}>
-                      {v.openPath === f.change.path ? '▾ ' : '▸ '}
-                      {f.name}
-                      <Text color="diffAdded">{` +${f.change.added}`}</Text>
-                      <Text color="diffRemoved">{` −${f.change.removed}`}</Text>
-                      <Text dimColor>{f.change.isNew ? '  new' : ''}{f.dir ? `  ${f.dir}` : ''}</Text>
-                    </Button>
-                    {v.openPath === f.change.path &&
-                      (f.change.diff ? (
-                        <Code format="diff" source={f.change.diff} path={f.change.path} wrap="truncate-end" />
-                      ) : (
-                        <Text dimColor size="caption">
-                          Rewritten whole; no line diff kept.
+        {l.vitals && Svg ? card('vitals', <Svg source={rings(l.vitals, W)} width={W} height={100} alt={vitalsAlt(l)} />) : null}
+
+        {l.steps.length > 0 && Svg
+          ? card(
+              'activity',
+              <Box flexDirection="column" gap={0}>
+                {heading('Activity', `${l.steps.length} steps · ${l.turns.length} request${l.turns.length === 1 ? '' : 's'}`)}
+                <Svg source={ribbon(l.steps, l.turns, l.isWorking, W)} width={W} height={46} alt="Activity ribbon" isInteractive />
+                <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+                  {(Object.keys(INK) as Kind[])
+                    .filter(k => l.steps.some(s => s.kind === k))
+                    .map(k => (
+                      <Text key={`legend:${k}`} size="caption" dimColor>
+                        <Text color={INK[k]}>●</Text>
+                        {` ${KIND_NAME[k]} ${l.steps.filter(s => s.kind === k).length}`}
+                      </Text>
+                    ))}
+                </Box>
+              </Box>,
+            )
+          : null}
+
+        {changed.length + onlyRead.length > 0
+          ? card(
+              'touched',
+              <Box flexDirection="column" gap={0}>
+                {heading('Claude touched', `${changed.length} changed${onlyRead.length ? ` · ${onlyRead.length} read` : ''}`)}
+                {changed.slice(0, 30).map(r => fileLine($, r, v, { Box, Text, Button, Code, Svg }))}
+                {onlyRead.length ? (
+                  <Button key="reads" plain onPress={() => flip($, 'showReads')}>
+                    {v.showReads ? '▾ ' : '▸ '}
+                    <Text dimColor>{`Only read: ${onlyRead.length} file${onlyRead.length === 1 ? '' : 's'}`}</Text>
+                  </Button>
+                ) : null}
+                {v.showReads ? onlyRead.slice(0, 40).map(r => fileLine($, r, v, { Box, Text, Button, Code, Svg })) : null}
+              </Box>,
+            )
+          : null}
+
+        {shippedCount(l) > 0
+          ? card(
+              'shipped',
+              <Box flexDirection="column" gap={1}>
+                {heading('Shipped', `${shippedCount(l)}`)}
+                {l.repos
+                  .filter(r => r.commits.length)
+                  .map(r => (
+                    <Box key={`commits:${r.root}`} flexDirection="column" gap={0}>
+                      <Text size="footnote" dimColor>
+                        {`${r.name} · ${r.branch} · `}
+                        <Text color={r.hasUpstream && r.ahead === 0 ? '#6fd3c6' : '#e9c46a'}>
+                          {r.hasUpstream ? (r.ahead === 0 ? 'all pushed' : `${r.ahead} not pushed`) : 'no remote'}
+                        </Text>
+                      </Text>
+                      {r.commits.slice(0, 8).map(c => (
+                        <Text key={`commit:${c.sha}`} wrap="truncate-end">
+                          <Text mono color={DONE}>{`${c.sha} `}</Text>
+                          {c.subject}
                         </Text>
                       ))}
+                    </Box>
+                  ))}
+                {[...l.results]
+                  .sort((a, b) => b.at - a.at)
+                  .slice(0, 10)
+                  .map(r => (
+                    <Box key={`result:${r.kind}:${r.title}:${r.detail}`} flexDirection="column" gap={0}>
+                      {r.href ? (
+                        <Link href={r.href}>{`${MARK[r.kind]} ${r.title}`}</Link>
+                      ) : (
+                        <Text wrap="truncate-end">{`${MARK[r.kind]} ${r.title}`}</Text>
+                      )}
+                      <Box flexDirection="row" gap={1}>
+                        <Text size="caption" dimColor wrap="truncate-end">
+                          {`${r.detail} · ${clock(r.at)}`}
+                        </Text>
+                        {r.run ? (
+                          <Button key={`copy:${r.title}`} plain onPress={press => copyRun($, r.run ?? '', press.surface)}>
+                            <Text size="caption" color={INK.run}>
+                              {v.copied === r.run ? 'Copied' : 'Copy run command'}
+                            </Text>
+                          </Button>
+                        ) : null}
+                      </Box>
+                    </Box>
+                  ))}
+              </Box>,
+            )
+          : null}
+
+        {requests.length
+          ? card(
+              'requests',
+              <Box flexDirection="column" gap={1}>
+                {heading('Your requests', `${requests.length}`)}
+                {(v.showAllRequests ? requests : requests.slice(-4)).reverse().map(q => (
+                  <Box key={`ask:${q.n}`} flexDirection="column" gap={0}>
+                    <Text wrap="truncate-end">
+                      {q.isNow ? <Text color={THINK} weight="semibold">{'now  '}</Text> : <Text dimColor>{`${clock(q.at)}  `}</Text>}
+                      {clip(q.text, 90)}
+                    </Text>
+                    <Text size="caption" dimColor>
+                      {q.ms !== null ? `${since(q.ms)}   ` : ''}
+                      {(Object.keys(INK) as Kind[])
+                        .filter(k => q.counts[k])
+                        .map(k => (
+                          <Text key={`c:${q.n}:${k}`}>
+                            <Text color={INK[k]}>●</Text>
+                            {` ${q.counts[k]} ${KIND_NAME[k]}  `}
+                          </Text>
+                        ))}
+                    </Text>
                   </Box>
                 ))}
-              </Box>
-            ))}
-          </Box>
-        )}
+                {requests.length > 4 ? (
+                  <Button key="all-requests" plain onPress={() => flip($, 'showAllRequests')}>
+                    <Text dimColor>{v.showAllRequests ? 'Show the last 4' : `Show all ${requests.length}`}</Text>
+                  </Button>
+                ) : null}
+              </Box>,
+            )
+          : null}
 
-        {l.reads.length > 0 && (
-          <Box flexDirection="column" gap={0}>
-            <Button key="reads" plain onPress={() => toggleReads($)}>
-              {v.showReads ? '▾ ' : '▸ '}
-              Looked at
-              <Text dimColor>{`  ${l.reads.length} file${l.reads.length === 1 ? '' : 's'} in ${readPlaces(l.reads).length} place${readPlaces(l.reads).length === 1 ? '' : 's'}`}</Text>
-            </Button>
-            {v.showReads &&
-              readPlaces(l.reads).map(p => (
-                <Text key={`reads:${p.root}`} size="caption" dimColor wrap="truncate-end">
-                  {`${p.root}: ${p.names.slice(0, 8).join(', ')}${p.names.length > 8 ? ` and ${p.names.length - 8} more` : ''}`}
-                </Text>
-              ))}
-          </Box>
-        )}
+        {t.root && t.files.length
+          ? card(
+              'tree',
+              <Box flexDirection="column" gap={0}>
+                <Button key="tree-toggle" plain onPress={() => flip($, 'showTree')}>
+                  {v.showTree ? '▾ ' : '▸ '}
+                  <Text weight="semibold">Files</Text>
+                  <Text dimColor>{`   ${t.root.slice(t.root.lastIndexOf('/') + 1)} · ${t.files.length}`}</Text>
+                </Button>
+                {v.showTree ? treeLines($, t, rows, v, { Box, Text, Button, Svg }) : null}
+              </Box>,
+            )
+          : null}
+
+        <Box flexDirection="column" gap={0} paddingX={1}>
+          <Text size="caption" dimColor wrap="truncate-middle">
+            {`Folder  ${!l.cwd ? '—' : place(`${l.cwd}/x`).root === "This chat's folder" ? "this chat's own folder (no project)" : prettyDir(l.cwd)}`}
+          </Text>
+          <Text size="caption" dimColor>
+            {`Model  ${l.model || '—'}`}
+          </Text>
+        </Box>
       </Box>
     )
   })
 }
 
-// ---------------------------------------------------------------- state
+// ---------------------------------------------------------------- pieces of the drawing
 
-type Settle = {
-  id: string
-  tool: string
-  args: Record<string, unknown>
-  kind: Kind
-  label: string
-  at: number
-  ok: boolean
-  text: string
+const MARK: Record<string, string> = { artifact: '◎', pr: '⇄', repo: '▣', script: '▶', doc: '▤', push: '↑' }
+
+type Els = { Box: any; Text: any; Button: any; Code?: any; Svg: any }
+
+function fileLine($: EngineInterface, r: FileRow, v: View, el: Els) {
+  const { Box, Text, Button, Code, Svg } = el
+  const st = STATE_STYLE[r.state]
+  const isOpen = v.openPath === r.path
+  const isLive = r.state === 'reading' || r.state === 'editing'
+  return (
+    <Box key={`file:${r.path}`} flexDirection="column" gap={0}>
+      <Box flexDirection="row" gap={1} alignItems="center" backgroundColor={isLive ? st.bg : undefined} paddingX={isLive ? 1 : 0}>
+        {Svg ? <Svg source={badge(r.name)} width={30} height={18} alt={r.name} /> : null}
+        <Box flexDirection="column" flexGrow={1} flexShrink={1} gap={0}>
+          <Box flexDirection="row" justifyContent="space-between" gap={1}>
+            <Button key={`open:${r.path}`} plain onPress={() => openFile($, r)}>
+              <Text color={isLive ? st.fg : undefined} weight={isLive ? 'semibold' : 'medium'}>
+                {r.name}
+              </Text>
+            </Button>
+            {r.added || r.removed ? (
+              <Text size="caption" tabular>
+                <Text color="diffAdded">{`+${r.added}`}</Text>
+                <Text color="diffRemoved">{` −${r.removed}`}</Text>
+              </Text>
+            ) : null}
+          </Box>
+          <Box flexDirection="row" gap={1} alignItems="center">
+            <Text size="caption" weight="semibold" color={st.fg} backgroundColor={st.bg}>
+              {` ${st.label} `}
+            </Text>
+            <Box flexShrink={1}>
+              <Text dimColor size="caption" wrap="truncate-start">
+                {[r.project, r.dir].filter(Boolean).join(' / ') + (r.isShell ? ' · by a command' : '')}
+              </Text>
+            </Box>
+          </Box>
+        </Box>
+      </Box>
+      {isOpen && Code ? (
+        v.openDiff || r.diff ? (
+          <Code format="diff" source={v.openDiff || r.diff} path={r.path} wrap="truncate-end" />
+        ) : (
+          <Text size="caption" dimColor>
+            No line changes to show.
+          </Text>
+        )
+      ) : null}
+    </Box>
+  )
 }
+
+type Node = { name: string; path: string; dirs: Record<string, Node>; files: string[] }
+
+function treeLines($: EngineInterface, t: Tree, rows: FileRow[], v: View, el: Els) {
+  const { Box, Text, Button, Svg } = el
+  const top: Node = { name: '', path: '', dirs: {}, files: [] }
+  for (const f of t.files) {
+    const parts = f.split('/')
+    let n = top
+    for (let i = 0; i < parts.length - 1; i++) {
+      const name = parts[i] ?? ''
+      const path = parts.slice(0, i + 1).join('/')
+      n = n.dirs[name] ??= { name, path, dirs: {}, files: [] }
+    }
+    n.files.push(f)
+  }
+  const state: Record<string, FileRow> = {}
+  for (const r of rows) if (r.path.startsWith(`${t.root}/`)) state[r.path.slice(t.root.length + 1)] = r
+  const OPEN_WORK: FileState[] = ['editing', 'new', 'uncommitted', 'changed']
+  const changedUnder = (dir: string) =>
+    Object.entries(state).filter(([rel, r]) => rel.startsWith(`${dir}/`) && OPEN_WORK.includes(r.state)).length
+  const doneUnder = (dir: string) =>
+    Object.entries(state).filter(([rel, r]) => rel.startsWith(`${dir}/`) && (r.state === 'committed' || r.state === 'pushed')).length
+  const touchedUnder = (dir: string) => Object.keys(state).some(rel => rel.startsWith(`${dir}/`))
+  const isOpen = (n: Node) =>
+    v.closedDirs.includes(n.path) ? false : v.openDirs.includes(n.path) || touchedUnder(n.path)
+
+  const out: RenderChildren[] = []
+  const walk = (n: Node, depth: number) => {
+    if (out.length > 220) return
+    for (const d of Object.values(n.dirs).sort((a, b) => a.name.localeCompare(b.name))) {
+      const open = isOpen(d)
+      const count = changedUnder(d.path)
+      const done = doneUnder(d.path)
+      out.push(
+        <Box key={`dir:${d.path}`} flexDirection="row" paddingLeft={depth * 2} gap={1}>
+          <Button key={`dir-btn:${d.path}`} plain onPress={() => toggleDir($, d.path, open)}>
+            <Text color="#8fb4ff">{open ? '▾ ' : '▸ '}</Text>
+            <Text color={count ? '#e9c46a' : done ? DONE : undefined}>{d.name}</Text>
+          </Button>
+          {count ? (
+            <Text size="caption" color="#e9c46a">
+              {`${count} changed`}
+            </Text>
+          ) : done ? (
+            <Text size="caption" color={DONE}>
+              {`${done} committed`}
+            </Text>
+          ) : null}
+        </Box>,
+      )
+      if (open) walk(d, depth + 1)
+    }
+    for (const f of n.files.sort()) {
+      const name = f.slice(f.lastIndexOf('/') + 1)
+      const r = state[f]
+      const st = r ? STATE_STYLE[r.state] : null
+      out.push(
+        <Box key={`tf:${f}`} flexDirection="row" paddingLeft={depth * 2 + 2} gap={1} alignItems="center">
+          {Svg ? <Svg source={badge(name)} width={30} height={18} alt={name} /> : null}
+          <Box flexGrow={1} flexShrink={1}>
+            <Text color={st && r?.state !== 'read' ? st.fg : undefined} dimColor={!st} wrap="truncate-end">
+              {name}
+            </Text>
+          </Box>
+          {r && st && r.state !== 'read' ? (
+            r.added || r.removed ? (
+              <Text size="caption" tabular>
+                <Text color="diffAdded">{`+${r.added}`}</Text>
+                <Text color="diffRemoved">{` −${r.removed}`}</Text>
+              </Text>
+            ) : (
+              <Text size="caption" color={st.fg}>
+                {st.label}
+              </Text>
+            )
+          ) : r ? (
+            <Text size="caption" color={STATE_STYLE.read.fg}>
+              read
+            </Text>
+          ) : null}
+        </Box>,
+      )
+    }
+  }
+  walk(top, 0)
+  if (out.length > 220) out.push(<Text key="tree-more" size="caption" dimColor>{`Showing the first 220 rows of ${t.files.length} files.`}</Text>)
+  return out
+}
+
+function repoSummary(r: Repo): string {
+  const dirty = r.files.filter(f => !r.baseline.includes(f.rel)).length
+  return dirty ? `${dirty} not committed` : r.commits.length ? 'clean' : 'nothing changed'
+}
+
+function shippedCount(l: Ledger): number {
+  return l.repos.reduce((n, r) => n + r.commits.length, 0) + l.results.length
+}
+
+function vitalsAlt(l: Ledger): string {
+  const v = l.vitals
+  if (!v) return ''
+  return `Context ${short(v.tokens)} of ${short(v.compactAt)}; ${v.limits.map(x => `${x.kind} ${x.percentUsed}%`).join(', ')}`
+}
+
+function pickMain(l: Ledger): Repo | null {
+  if (!l.repos.length) return null
+  const lastEdit = [...l.touches].filter(t => t.edits > 0).sort((a, b) => b.at - a.at)[0]
+  const byEdit = lastEdit ? l.repos.find(r => lastEdit.path.startsWith(`${r.root}/`)) : undefined
+  return byEdit ?? l.repos.find(r => l.cwd === r.root || l.cwd.startsWith(`${r.root}/`)) ?? l.repos[0] ?? null
+}
+
+// ---------------------------------------------------------------- state changes
+
+type RawLimit = { kind: string; percentUsed: number; resetsAt?: string }
+type RawContext = { tokens?: number; window: number }
 
 async function safely($: EngineInterface, fn: (l: Ledger) => Ledger) {
   try {
     await update($, ledger, fn)
   } catch {
-    // The map is a view; it never gets in the way of the work itself.
+    // The map is a view; it never gets in the way of the work.
   }
 }
 
+async function boot($: EngineInterface) {
+  try {
+    const cwd = await $.session.cwd()
+    const model = await $.session.model().catch(() => '')
+    await safely($, l => ({ ...l, cwd, model }))
+    const usage = await $.session.usage()
+    await vitals($, usage.context as RawContext, usage.rateLimits as RawLimit[])
+    await adopt($, `${cwd}/.`)
+  } catch (err) {
+    lastError = `boot: ${String(err)}`
+  }
+}
+
+async function vitals($: EngineInterface, context: RawContext, limits: RawLimit[]) {
+  if (!context || !context.window) return
+  let compactAt = context.window
+  let isCompactPoint = false
+  try {
+    const usage = await $.session.usage({ breakdown: 'summary' })
+    const b = usage.context.breakdown
+    if (b && b.isAutoCompactEnabled && b.autoCompactThreshold) {
+      compactAt = b.autoCompactThreshold
+      isCompactPoint = true
+    }
+  } catch {
+    // Use the window.
+  }
+  const next = {
+    tokens: context.tokens ?? 0,
+    compactAt,
+    isCompactPoint,
+    limits: (limits ?? []).map(x => ({ kind: x.kind, percentUsed: x.percentUsed, resetsAt: x.resetsAt ?? null })),
+  }
+  await safely($, l => ({ ...l, vitals: next.limits.length || !l.vitals ? next : { ...next, limits: l.vitals.limits } }))
+}
+
 async function noteRequest($: EngineInterface, text: string) {
-  const clean = text.replace(/\s+/g, ' ').trim().slice(0, 200)
-  await safely($, l => ({
-    ...l,
-    turns: [...l.turns, { n: l.turns.length + 1, text: clean, at: Date.now() }].slice(-100),
-  }))
+  const clean = text.replace(/\s+/g, ' ').trim().slice(0, 240)
+  await safely($, l => ({ ...l, turns: [...l.turns, { n: l.turns.length + 1, text: clean, at: Date.now(), endedAt: null }].slice(-120) }))
 }
 
 async function setWorking($: EngineInterface, isWorking: boolean) {
+  const now = Date.now()
   await safely($, l => ({
     ...l,
     isWorking,
     live: isWorking ? l.live : [],
-    turnEndedAt: isWorking ? l.turnEndedAt : Date.now(),
+    turnEndedAt: isWorking ? l.turnEndedAt : now,
+    turns: isWorking ? l.turns : l.turns.map((t, i) => (i === l.turns.length - 1 && !t.endedAt ? { ...t, endedAt: now } : t)),
   }))
   if (isWorking && !ticker) {
     // Redraw every few seconds while working so the elapsed times move.
-    ticker = $.clock.every(5000, () => void bump($))
+    ticker = $.clock.every(3000, () => void bump($))
   } else if (!isWorking && ticker) {
     ticker.cancel()
     ticker = null
@@ -309,385 +653,103 @@ async function setWorking($: EngineInterface, isWorking: boolean) {
 
 async function bump($: EngineInterface) {
   try {
-    await update($, view, v => ({ ...v, tick: v.tick + 1 }))
+    await update($, view, x => ({ ...x, tick: x.tick + 1 }))
   } catch {
     // A missed redraw is harmless.
   }
 }
 
-async function toggleFile($: EngineInterface, path: string) {
-  await update($, view, v => ({ ...v, openPath: v.openPath === path ? null : path }))
-}
-
-async function toggleReads($: EngineInterface) {
-  await update($, view, v => ({ ...v, showReads: !v.showReads }))
-}
-
-export function settle(l: Ledger, s: Settle): Ledger {
-  let kind = s.kind
-  let results = l.results
-  let changes = l.changes
-  let reads = l.reads
-  const path = str(s.args.file_path) || str(s.args.notebook_path)
-
-  if (s.ok) {
-    if (s.tool === 'Read' && path) {
-      reads = reads.includes(path) ? reads : [...reads, path].slice(-400)
-    } else if (s.tool === 'Edit' && path) {
-      changes = upsert(changes, path, edit(str(s.args.old_string), str(s.args.new_string), path), s.at)
-    } else if (s.tool === 'MultiEdit' && path && Array.isArray(s.args.edits)) {
-      for (const one of s.args.edits as Record<string, unknown>[]) {
-        changes = upsert(changes, path, edit(str(one.old_string), str(one.new_string), path), s.at)
-      }
-    } else if (s.tool === 'Write' && path) {
-      const isNew = /created/i.test(s.text)
-      const lines = splitLines(str(s.args.content))
-      changes = upsert(
-        changes,
-        path,
-        isNew
-          ? { added: lines.length, removed: 0, isNew: true, diff: newFileDiff(lines, path) }
-          : { added: 0, removed: 0, isNew: false, diff: '' },
-        s.at,
-      )
-      const made = createdResult(path, isNew, s.at)
-      if (made) results = addResult(results, made)
-    } else if (s.tool === 'NotebookEdit' && path) {
-      changes = upsert(changes, path, { added: 0, removed: 0, isNew: false, diff: '' }, s.at)
-    } else if (s.tool === 'Bash') {
-      const found = bashResults(str(s.args.command), s.text, s.at)
-      if (found.length) kind = 'publish'
-      for (const r of found) results = addResult(results, r)
-    } else if (s.tool === 'Artifact') {
-      const href = /https:\/\/claude\.ai\/[^\s"'<>)\]]*artifact[^\s"'<>)\]]*/.exec(s.text)?.[0] ?? null
-      if (href) {
-        const title = str(s.args.title) || base(str(s.args.file_path)).replace(/\.[a-z]+$/i, '') || 'Artifact'
-        results = addResult(results, { kind: 'artifact', title, detail: 'Artifact page', href, at: s.at })
-      }
+async function note($: EngineInterface, p: Probe) {
+  try {
+    const was = await read($, probe)
+    if (!was || was.bodyColumns !== p.bodyColumns || was.placement !== p.placement || was.surface !== p.surface) {
+      await update($, probe, () => p)
     }
-  }
-
-  const step: Step = { kind, at: s.at, turn: l.turns.length, label: s.ok ? s.label : `${s.label} (failed)` }
-  return {
-    ...l,
-    steps: [...l.steps, step].slice(-600),
-    live: l.live.filter(x => x.id !== s.id),
-    changes,
-    reads,
-    results,
+  } catch {
+    // Development aid only.
   }
 }
 
-type Delta = { added: number; removed: number; isNew: boolean; diff: string }
-
-function upsert(changes: Change[], path: string, d: Delta, at: number): Change[] {
-  const old = changes.find(c => c.path === path)
-  const merged: Change = old
-    ? {
-        path,
-        added: old.added + d.added,
-        removed: old.removed + d.removed,
-        isNew: old.isNew || d.isNew,
-        edits: old.edits + 1,
-        at,
-        diff: d.diff || old.diff,
-      }
-    : { path, added: d.added, removed: d.removed, isNew: d.isNew, edits: 1, at, diff: d.diff }
-  return [...changes.filter(c => c.path !== path), merged].slice(-300)
-}
-
-function addResult(results: Result[], r: Result): Result[] {
-  const same = (x: Result) => x.kind === r.kind && (r.href ? x.href === r.href : x.title === r.title && x.detail === r.detail)
-  return [...results.filter(x => !same(x)), r].slice(-60)
-}
-
-// ---------------------------------------------------------------- reading tool calls
-
-export function classify(tool: string, command: string): Kind {
-  if (['Read', 'Grep', 'Glob', 'LS', 'NotebookRead'].includes(tool)) return 'read'
-  if (['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].includes(tool)) return 'edit'
-  if (['Bash', 'PowerShell', 'Monitor'].includes(tool)) {
-    return /\bgit\b[^|;&]*\bpush\b|\bgh\s+(pr|repo)\s+create\b/.test(command) ? 'publish' : 'run'
-  }
-  if (['WebFetch', 'WebSearch'].includes(tool) || /^mcp__(claude-in-chrome|Claude_Browser|deskwright[\w-]*)__/.test(tool)) return 'web'
-  if (['Agent', 'Task', 'Workflow'].includes(tool)) return 'agent'
-  if (tool === 'Artifact') return 'publish'
-  return 'other'
-}
-
-export function describe(tool: string, a: Record<string, unknown>): string {
-  const path = str(a.file_path) || str(a.notebook_path)
-  switch (tool) {
-    case 'Bash':
-      return str(a.description) || clip(str(a.command), 70)
-    case 'Read':
-      return `Read ${base(path)}`
-    case 'Edit':
-    case 'MultiEdit':
-      return `Edit ${base(path)}`
-    case 'Write':
-      return `Write ${base(path)}`
-    case 'Grep':
-      return `Search for "${clip(str(a.pattern), 40)}"`
-    case 'Glob':
-      return `Find ${clip(str(a.pattern), 50)}`
-    case 'WebFetch':
-      return `Open ${host(str(a.url))}`
-    case 'WebSearch':
-      return `Search the web: ${clip(str(a.query), 50)}`
-    case 'Agent':
-    case 'Task':
-      return `Subagent: ${clip(str(a.description) || str(a.subagent_type) || 'task', 60)}`
-    case 'Artifact':
-      return `Publish ${str(a.title) || base(str(a.file_path)) || 'artifact'}`
-  }
-  const mcp = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/.exec(tool)
-  if (mcp) return `${(mcp[1] ?? '').replace(/^[0-9a-f-]{20,}$/, 'connector')}: ${(mcp[2] ?? '').replace(/_/g, ' ')}`
-  return tool
-}
-
-export function bashResults(cmd: string, text: string, at: number): Result[] {
-  const out: Result[] = []
-  if (/\b(rejected|fatal:|error:)/i.test(text) && /\b(push|commit|create)\b/.test(cmd)) return out
-  const repo = repoOf(cmd)
-
-  const commit = /\[([^\s\]]+)(?: \(root-commit\))? ([0-9a-f]{7,40})\] ([^\n]+)/.exec(text)
-  if (/\bgit\b[^|;&]*\bcommit\b/.test(cmd)) {
-    // A quiet commit (-q) prints nothing, so fall back to the message in the command.
-    const said = /\bcommit\b[^|;&]*?\s-[a-zA-Z]*m\s*(?:"([^"]*)"|'([^']*)')/.exec(cmd)
-    const message = commit ? (commit[3] ?? '').trim() : ((said?.[1] ?? said?.[2] ?? '').split('\n')[0] ?? '').trim()
-    if (message) {
-      const where = commit ? `${repo} · ${commit[1]} · ${commit[2]}` : repo
-      out.push({ kind: 'commit', title: message, detail: where, href: null, at })
+/** Finds the repository a path lives in and starts following it. */
+async function adopt($: EngineInterface, path: string) {
+  try {
+    const dir = path.slice(0, path.lastIndexOf('/')) || '/'
+    const root = await rootOf($, dir)
+    if (!root) {
+      lastError = `adopt ${path}: no git root for ${dir}`
+      return
     }
+    const l = await read($, ledger)
+    if (l.repos.some(r => r.root === root)) return
+    const repo = await scan($, root, null, Date.now())
+    if (!repo) return
+    await safely($, x => (x.repos.some(r => r.root === root) ? x : { ...x, repos: [...x.repos, repo].slice(-8) }))
+    await followTree($)
+  } catch (err) {
+    // Not a repository, or git is missing: the map works without it.
+    lastError = `adopt ${path}: ${String(err)}`
   }
+}
 
+/** Looks at every followed repository again, a moment after the work settles. */
+function soon($: EngineInterface) {
+  pending?.cancel()
+  pending = $.clock.after(900, () => void rescan($))
+}
 
-  if (/\bgit\b[^|;&]*\bpush\b/.test(cmd) && !/--dry-run|\s-n\b/.test(cmd)) {
-    const to = /To (?:https:\/\/github\.com\/|git@github\.com:)([\w.-]+\/[\w.-]+?)(?:\.git)?\s/.exec(text)
-    const branch = /\s(\S+) -> (\S+)/.exec(text)
-    const deleted = /\[deleted\]/.test(text) || /--delete\b/.test(cmd)
-    if (!deleted) {
-      out.push({
-        kind: 'push',
-        title: `Pushed ${repo}${branch ? ` (${branch[2]})` : ''}`,
-        detail: to ? `github.com/${to[1]}` : 'to its remote',
-        href: to ? `https://github.com/${to[1]}` : null,
-        at,
-      })
-    }
+async function rescan($: EngineInterface) {
+  try {
+    const l = await read($, ledger)
+    const now = Date.now()
+    const fresh: Repo[] = []
+    for (const r of l.repos) fresh.push((await scan($, r.root, r, now)) ?? r)
+    await safely($, x => ({ ...x, repos: fresh }))
+    await followTree($)
+  } catch {
+    // Try again after the next change.
   }
+}
 
-  if (/\bgh\s+pr\s+create\b/.test(cmd)) {
-    const m = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/.exec(text)
-    if (m) out.push({ kind: 'pr', title: `Pull request in ${m[0].split('/')[4]}`, detail: m[0].replace('https://', ''), href: m[0], at })
+async function followTree($: EngineInterface) {
+  const l = await read($, ledger)
+  const main = pickMain(l)
+  if (!main) return
+  const t = await read($, tree)
+  if (t.root === main.root && Date.now() - t.at < 20_000) return
+  const files = await listFiles($, main.root)
+  await update($, tree, () => ({ root: main.root, files, at: Date.now() }))
+}
+
+async function flip($: EngineInterface, key: 'showReads' | 'showTree' | 'showAllRequests') {
+  await update($, view, x => ({ ...x, [key]: !x[key] }))
+}
+
+async function toggleDir($: EngineInterface, path: string, isOpen: boolean) {
+  await update($, view, x => ({
+    ...x,
+    openDirs: isOpen ? x.openDirs.filter(p => p !== path) : [...x.openDirs, path],
+    closedDirs: isOpen ? [...x.closedDirs, path] : x.closedDirs.filter(p => p !== path),
+  }))
+}
+
+async function openFile($: EngineInterface, r: FileRow) {
+  const v = await read($, view)
+  if (v.openPath === r.path) {
+    await update($, view, x => ({ ...x, openPath: null, openDiff: null }))
+    return
   }
-
-  if (/\bgh\s+repo\s+create\b/.test(cmd)) {
-    const m = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+/.exec(text)
-    out.push({ kind: 'repo', title: 'New GitHub repo', detail: m ? m[0].replace('https://', '') : repo, href: m ? m[0] : null, at })
+  await update($, view, x => ({ ...x, openPath: r.path, openDiff: null }))
+  if (r.repo && r.state !== 'read') {
+    const rel = r.path.slice(r.repo.root.length + 1)
+    const diff = await diffOf($, r.repo.root, rel, r.state === 'new').catch(() => '')
+    if (diff) await update($, view, x => (x.openPath === r.path ? { ...x, openDiff: diff } : x))
   }
-  return out
 }
 
-function createdResult(path: string, isNew: boolean, at: number): Result | null {
-  if (!isNew) return null
-  const p = place(path)
-  if (/\.sh$/.test(path)) return { kind: 'script', title: base(path), detail: `${p.root} · run with bash`, href: null, at }
-  if (/\.(html|pdf|docx|xlsx|pptx|png|svg|mp4|gif)$/i.test(path) && !/\/(src|hooks|tests?|node_modules)\//.test(path)) {
-    return { kind: 'doc', title: base(path), detail: p.root, href: null, at }
+async function copyRun($: EngineInterface, text: string, surface: string) {
+  const done = await $.ui.copy({ text, surface: surface as never }).catch(() => ({ isCopied: false }))
+  if (done.isCopied) {
+    await update($, view, x => ({ ...x, copied: text }))
+    $.clock.after(2500, () => void update($, view, x => ({ ...x, copied: null })))
   }
-  return null
-}
-
-function repoOf(cmd: string): string {
-  const m =
-    /(?:^|&&|;|\n)\s*cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/.exec(cmd) ?? /\bgit\s+-C\s+(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(cmd)
-  const dir = m ? (m[1] ?? m[2] ?? m[3] ?? '') : ''
-  return dir ? base(dir.replace(/\/+$/, '')) || dir : 'this folder'
-}
-
-// ---------------------------------------------------------------- diffs
-
-function edit(oldS: string, newS: string, path: string): Delta {
-  const a = splitLines(oldS)
-  const b = splitLines(newS)
-  let s = 0
-  while (s < a.length && s < b.length && a[s] === b[s]) s++
-  let e = 0
-  while (e < a.length - s && e < b.length - s && a[a.length - 1 - e] === b[b.length - 1 - e]) e++
-  const del = a.slice(s, a.length - e)
-  const add = b.slice(s, b.length - e)
-  const before = a.slice(Math.max(0, s - 2), s)
-  const after = a.slice(a.length - e, Math.min(a.length, a.length - e + 2))
-  const showDel = del.slice(0, 30)
-  const showAdd = add.slice(0, 30)
-  const oldCount = before.length + showDel.length + after.length
-  const newCount = before.length + showAdd.length + after.length
-  const diff = [
-    `--- a/${base(path)}`,
-    `+++ b/${base(path)}`,
-    `@@ -1,${oldCount} +1,${newCount} @@`,
-    ...before.map(x => ` ${x}`),
-    ...showDel.map(x => `-${x}`),
-    ...showAdd.map(x => `+${x}`),
-    ...after.map(x => ` ${x}`),
-  ].join('\n')
-  return { added: add.length, removed: del.length, isNew: false, diff: oldCount + newCount > 0 ? diff : '' }
-}
-
-function newFileDiff(lines: string[], path: string): string {
-  const shown = lines.slice(0, 40)
-  if (!shown.length) return ''
-  return [`--- /dev/null`, `+++ b/${base(path)}`, `@@ -0,0 +1,${shown.length} @@`, ...shown.map(x => `+${x}`)].join('\n')
-}
-
-// ---------------------------------------------------------------- places
-
-export function place(path: string): { root: string; rel: string } {
-  const p = path.replace(/^\/home\/[^/]+/, '~')
-  let m: RegExpExecArray | null
-  if ((m = /^~\/projects\/([^/]+)\/(.*)$/.exec(p))) return { root: m[1] ?? '', rel: m[2] ?? '' }
-  if ((m = /^~\/\.config\/Claude\/scratch-workspaces\/[^/]+\/[^/]+\/[^/]+\/(.*)$/.exec(p))) return { root: "This chat's folder", rel: m[1] ?? '' }
-  if ((m = /^\/tmp\/claude-\d+\/[^/]+\/[^/]+\/scratchpad\/(.*)$/.exec(p))) return { root: 'Scratchpad', rel: m[1] ?? '' }
-  if ((m = /^~\/\.claude\/(.*)$/.exec(p))) return { root: 'Claude config', rel: m[1] ?? '' }
-  if ((m = /^~\/(Documents|Desktop|Downloads)\/([^/]+)\/(.*)$/.exec(p))) return { root: m[2] ?? '', rel: m[3] ?? '' }
-  const i = p.lastIndexOf('/')
-  return { root: i > 0 ? p.slice(0, i) : p, rel: p.slice(i + 1) }
-}
-
-type Group = {
-  root: string
-  added: number
-  removed: number
-  at: number
-  files: { change: Change; name: string; dir: string }[]
-}
-
-export function groupChanges(changes: Change[]): Group[] {
-  const byRoot: Record<string, Group> = {}
-  for (const c of changes) {
-    const p = place(c.path)
-    const g = (byRoot[p.root] ??= { root: p.root, added: 0, removed: 0, at: 0, files: [] })
-    const cut = p.rel.lastIndexOf('/')
-    g.files.push({ change: c, name: cut >= 0 ? p.rel.slice(cut + 1) : p.rel, dir: cut >= 0 ? p.rel.slice(0, cut) : '' })
-    g.added += c.added
-    g.removed += c.removed
-    g.at = Math.max(g.at, c.at)
-  }
-  const groups = Object.values(byRoot).sort((a, b) => b.at - a.at)
-  for (const g of groups) g.files.sort((a, b) => b.change.at - a.change.at)
-  return groups
-}
-
-function readPlaces(paths: string[]): { root: string; names: string[] }[] {
-  const by: Record<string, string[]> = {}
-  for (const path of paths) {
-    const p = place(path)
-    ;(by[p.root] ??= []).push(base(path))
-  }
-  return Object.entries(by)
-    .map(([root, names]) => ({ root, names }))
-    .sort((a, b) => b.names.length - a.names.length)
-}
-
-// ---------------------------------------------------------------- ribbon
-
-// One segment per tool call, coloured by kind, a gap and a dot at each new
-// request. Hovering a segment names the call; hovering a dot shows the request.
-// Drawn at its real pixel size: the desktop scales an Svg up to the slot
-// otherwise, which turned a short ribbon into big blocks.
-const RIBBON_W = 300
-const RIBBON_H = 34
-
-function ribbonWidth(steps: Step[]): number {
-  const shown = steps.slice(-180)
-  const breaks = shown.filter((s, i) => i > 0 && s.turn !== shown[i - 1]?.turn).length
-  const unit = Math.max(2.5, Math.min(14, (RIBBON_W - breaks * 7) / Math.max(1, shown.length)))
-  return Math.min(RIBBON_W, Math.ceil(shown.length * unit + breaks * 7 + 2))
-}
-
-export function ribbon(steps: Step[], turns: { n: number; text: string; at: number }[], isWorking: boolean): string {
-  const shown = steps.slice(-180)
-  const W = RIBBON_W
-  const H = RIBBON_H
-  const breaks = shown.filter((s, i) => i > 0 && s.turn !== shown[i - 1]?.turn).length
-  const unit = Math.max(2.5, Math.min(14, (W - breaks * 7) / Math.max(1, shown.length)))
-  const parts: string[] = []
-  let x = 0
-  shown.forEach((s, i) => {
-    const isBreak = i === 0 || s.turn !== shown[i - 1]?.turn
-    if (isBreak) {
-      if (i > 0) x += 7
-      const ask = turns.find(t => t.n === s.turn)
-      parts.push(
-        `<circle cx="${(x + 2.5).toFixed(1)}" cy="5" r="2.5" fill="#9aa0a8"><title>${esc(ask ? `You: ${ask.text}` : 'Before the map started')}</title></circle>`,
-      )
-    }
-    const isLast = i === shown.length - 1
-    const pulse = isLast && isWorking ? '<animate attributeName="opacity" values="1;0.3;1" dur="1.4s" repeatCount="indefinite"/>' : ''
-    parts.push(
-      `<rect x="${x.toFixed(1)}" y="12" width="${Math.max(1.5, unit - 1).toFixed(1)}" height="20" rx="1.5" fill="${INK[s.kind]}">${pulse}<title>${esc(`${clock(s.at)}  ${s.label}`)}</title></rect>`,
-    )
-    x += unit
-  })
-  const width = ribbonWidth(steps)
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${H}" viewBox="0 0 ${width} ${H}">${parts.join('')}</svg>`
-}
-
-// ---------------------------------------------------------------- small helpers
-
-function Heading({ Text, title, note }: { Text: any; title: string; note: string }) {
-  return (
-    <Text weight="semibold">
-      {title}
-      <Text dimColor weight="regular">{`  ${note}`}</Text>
-    </Text>
-  )
-}
-
-function count(steps: Step[], k: Kind): number {
-  return steps.filter(s => s.kind === k).length
-}
-
-function str(v: unknown): string {
-  return typeof v === 'string' ? v : ''
-}
-
-function base(p: string): string {
-  const i = p.lastIndexOf('/')
-  return i >= 0 ? p.slice(i + 1) : p
-}
-
-function host(url: string): string {
-  return /^https?:\/\/([^/]+)/.exec(url)?.[1] ?? clip(url, 40)
-}
-
-function clip(s: string, n: number): string {
-  const one = s.replace(/\s+/g, ' ').trim()
-  return one.length > n ? `${one.slice(0, n - 1)}…` : one
-}
-
-function splitLines(s: string): string[] {
-  if (!s) return []
-  const lines = s.split('\n')
-  if (lines[lines.length - 1] === '') lines.pop()
-  return lines
-}
-
-function esc(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-}
-
-function clock(t: number): string {
-  const d = new Date(t)
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-
-function since(t: number, now: number): string {
-  const s = Math.max(0, Math.round((now - t) / 1000))
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ${s % 60}s`
-  return `${Math.floor(m / 60)}h ${m % 60}m`
 }
