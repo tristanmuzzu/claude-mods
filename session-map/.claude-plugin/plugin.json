@@ -1,0 +1,7 @@
+{
+  "name": "session-map",
+  "version": "0.1.0",
+  "description": "A side pane that shows what Claude is doing now, which files it changed in which project, and what came out of the session.",
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

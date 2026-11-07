@@ -40,12 +40,32 @@ Fix login bug         <- idle
 - If the app refuses a rename (for example you decline one on a chat you
   titled yourself), the mod stops renaming that chat until it restarts.
 
+## session-map
+
+A pane beside the chat that answers three questions at a glance:
+
+- **Now**: whether Claude is working, your last request, and the calls still
+  running with how long each has taken.
+- **Activity ribbon**: one coloured segment per tool call (read, edit, run,
+  web, subagent, publish), with a gap and a dot at each of your requests.
+  Hover a segment for the call, a dot for the request. The newest segment
+  pulses while Claude works.
+- **Results**: commits, pushes, pull requests, new repos, published artifacts
+  and new scripts, newest first, linked where there is a URL.
+- **Changed**: files Claude edited, grouped by project, with line counts.
+  Press a file to see its last edit as a diff.
+- **Looked at**: files it only read, folded away.
+
+It reads the session's own tool calls. It makes no model calls and no network
+requests and touches no files. `/map` opens it again if you close it.
+
 ## Install
 
 ```bash
 claude plugin marketplace add ~/projects/claude-mods
 claude plugin install plan-meter@tristan-mods --scope user
 claude plugin install working-dot@tristan-mods --scope user
+claude plugin install session-map@tristan-mods --scope user
 ```
 
-Test: `claude plugin test plan-meter`.
+Test: `claude plugin test plan-meter` (or `session-map`).

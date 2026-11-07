@@ -13,6 +13,11 @@
       "name": "working-dot",
       "source": "./working-dot",
       "description": "A green dot in front of a chat's title in the desktop sidebar while Claude is working in it."
+    },
+    {
+      "name": "session-map",
+      "source": "./session-map",
+      "description": "A side pane: what Claude is doing now, an activity ribbon, which files it changed in which project, and what came out (commits, pushes, artifacts, scripts)."
     }
   ]
 }
