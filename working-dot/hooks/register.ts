@@ -8,6 +8,10 @@ const SERVER = 'ccd_session_mgmt'
 const RECHECK_MS = 15_000
 
 let working = false
+// True while the chat's last turn ended with background work still in flight
+// (a background shell, subagent, monitor or workflow, or a scheduled wakeup):
+// paused, not done, so the dot stays until the turn that work wakes ends.
+let pendingWork = false
 let disabled = false // set when the app refuses a rename (no desktop host, or a declined rename)
 let lastCheck = 0
 let chain: Promise<unknown> = Promise.resolve()
@@ -62,6 +66,17 @@ function clearMark($: EngineInterface): Promise<unknown> {
   return chain
 }
 
+// Whether a Stop event says the chat will be woken again by work of its own.
+function hasPendingWork(e: {
+  background_tasks?: readonly unknown[]
+  session_crons?: readonly { recurring: boolean }[]
+}): boolean {
+  if ((e.background_tasks ?? []).length > 0) return true
+  // A one-shot wakeup means "come back to this task"; a recurring schedule is
+  // a standing job, not unfinished work.
+  return (e.session_crons ?? []).some((c) => !c.recurring)
+}
+
 export const register: Register = (on) => {
   // A leftover marker from a crash or restart mid-turn.
   on('session.start', async ($, e, next) => {
@@ -73,6 +88,7 @@ export const register: Register = (on) => {
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     working = true
+    pendingWork = false
     // A brand-new chat gets its name from the app a moment after the first
     // prompt; give that a few seconds before marking it.
     if ((await $.session.turns()) > 1) void ensureMark($)
@@ -85,11 +101,22 @@ export const register: Register = (on) => {
     return next(e)
   })
 
+  // The main loop's Stop carries the background work still in flight.
+  on('classic.Stop', async ($, e, next) => {
+    pendingWork = hasPendingWork(e)
+    return next(e)
+  })
+
   on('turn.complete', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     working = false
-    // Not awaited: a rename the app holds for approval must not hold the turn.
-    void clearMark($)
+    // An interrupt or an error is an end: the person stopped it, or it failed.
+    if (e.reason === 'aborted' || e.reason === 'error') pendingWork = false
+    // Stop may be heard just before or just after this; decide once both are
+    // in. Not awaited: a rename the app holds for approval must not hold the turn.
+    $.clock.after(1_500, () => {
+      if (!working && !pendingWork) void clearMark($)
+    })
     return next(e)
   })
 }

@@ -37,6 +37,10 @@ Fix login bug         <- idle
 - A brand-new chat gets the dot about 5 seconds into its first turn, after the
   app has named it.
 - A dot left over from a crash or restart is cleared when that chat starts again.
+- The dot stays while a chat is paused on its own background work (a background
+  command, subagent, monitor or workflow, or a scheduled wakeup) and comes off
+  only when the turn that work wakes ends with nothing left in flight. Stopping
+  a chat yourself clears it.
 - If the app refuses a rename (for example you decline one on a chat you
   titled yourself), the mod stops renaming that chat until it restarts.
 

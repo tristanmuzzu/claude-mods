@@ -1,1 +1,1 @@
-{ "name": "working-dot", "version": "0.1.0", "description": "Puts a green dot in front of a chat's sidebar title while Claude is working in it, and removes it when the turn ends." }
+{ "name": "working-dot", "version": "0.2.0", "description": "Puts a green dot in front of a chat's sidebar title while Claude is working in it, and removes it when the turn ends." }
