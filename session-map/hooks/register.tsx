@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { Kind, Ledger, PlanItem, Probe, Repo, TurnEnd, View } from '../types'
-import { badge, DONE, glassChevron, glyph, INK, liveDot, moodColor, QUIET, rings, RINGS_H, ROW, timelineRow, track, WAIT } from './art'
+import { badge, DONE, chevron, glyph, INK, liveDot, moodColor, QUIET, rings, RINGS_H, ROW, timelineRow, track, WAIT } from './art'
 import type { Mood } from './art'
 import { diffOf, gitTrouble, rootOf, scan } from './git'
 import {
@@ -411,9 +411,9 @@ function chipView($: EngineInterface, c: Chip, v: View, el: Els) {
 /** Files listed in an open project before "Show more". */
 const FILES_SHOWN = 8
 
-const DISC = 22
+const CHEV = 14
 
-/** Show N more / Show less, with the glass chevron beside the words. Both the words and the disc press it. */
+/** Show N more / Show less, with a thin chevron beside the words. Both the words and the chevron press it. */
 function moreToggle(
   key: string,
   isOpen: boolean,
@@ -433,7 +433,7 @@ function moreToggle(
       </Button>
       {Svg ? (
         <Box key={`disc:${key}`} position="relative">
-          <Svg source={glassChevron(isOpen ? 'up' : 'down', DISC)} width={DISC} height={DISC} alt={words} />
+          <Svg source={chevron(isOpen ? 'up' : 'down', CHEV)} width={CHEV} height={CHEV} alt={words} />
           <Box position="absolute" top={0} left={0} width="100%" height="100%">
             <Button key={`${key}:disc`} plain onPress={onPress}>
               {'\u2003\u2003'}
