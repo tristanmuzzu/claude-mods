@@ -543,6 +543,8 @@ async function boot($: EngineInterface) {
     const usage = await $.session.usage()
     await vitals($, usage.context as RawContext, usage.rateLimits as RawLimit[])
     await adopt($, `${cwd}/.`)
+    // A reload keeps the ledger's repos from older code: scan them again so new fields fill in at once.
+    await rescan($)
   } catch (err) {
     lastError = `boot: ${String(err)}`
   }
