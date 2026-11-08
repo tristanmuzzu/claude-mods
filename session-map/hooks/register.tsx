@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { Kind, Ledger, PlanItem, Probe, Repo, TurnEnd, View } from '../types'
-import { badge, DONE, glyph, INK, liveDot, moodColor, QUIET, rings, RINGS_H, ROW, timelineRow, track, WAIT } from './art'
+import { badge, DONE, glassChevron, glyph, INK, liveDot, moodColor, QUIET, rings, RINGS_H, ROW, timelineRow, track, WAIT } from './art'
 import type { Mood } from './art'
 import { diffOf, gitTrouble, rootOf, scan } from './git'
 import {
@@ -286,13 +286,14 @@ export const register: Register = on => {
               </Box>
             ) : null}
             {all.length > STORIES_SHOWN ? (
-              <Box flexDirection="row" justifyContent="center">
-                <Button key="all-requests" plain onPress={() => flipAll($)}>
-                  <Text size="footnote" color="#9aa0a6">
-                    {v.showAllRequests ? 'Show less  ∧' : `Show ${all.length - STORIES_SHOWN} more  ∨`}
-                  </Text>
-                </Button>
-              </Box>
+              moreToggle(
+                'all-requests',
+                v.showAllRequests,
+                all.length - STORIES_SHOWN,
+                () => flipAll($),
+                { Box, Text, Button, Svg },
+                'center',
+              )
             ) : null}
           </Box>
         ) : null}
@@ -410,6 +411,42 @@ function chipView($: EngineInterface, c: Chip, v: View, el: Els) {
 /** Files listed in an open project before "Show more". */
 const FILES_SHOWN = 8
 
+const DISC = 26
+
+/** Show N more / Show less, with the glass chevron beside the words. Both the words and the disc press it. */
+function moreToggle(
+  key: string,
+  isOpen: boolean,
+  hidden: number,
+  onPress: () => void,
+  el: Els,
+  align: 'center' | 'flex-start',
+) {
+  const { Box, Text, Button, Svg } = el
+  const words = isOpen ? 'Show less' : `Show ${hidden} more`
+  return (
+    <Box key={`wrap:${key}`} flexDirection="row" justifyContent={align} alignItems="center" gap={0}>
+      <Button key={key} plain onPress={onPress}>
+        <Text size="footnote" color="#c9ccd1">
+          {words}
+        </Text>
+      </Button>
+      {Svg ? (
+        <Box key={`disc:${key}`} position="relative">
+          <Svg source={glassChevron(isOpen ? 'up' : 'down', DISC)} width={DISC} height={DISC} alt={words} />
+          <Box position="absolute" top={0} left={0} width="100%" height="100%">
+            <Button key={`${key}:disc`} plain onPress={onPress}>
+              {'\u2003\u2003'}
+            </Button>
+          </Box>
+        </Box>
+      ) : (
+        <Text dimColor>{isOpen ? '∧' : '∨'}</Text>
+      )}
+    </Box>
+  )
+}
+
 function groupLines($: EngineInterface, g: Group, v: View, el: Els) {
   const { Box, Text, Button, Code, Svg } = el
   const isOpen = v.openRepos.includes(g.key)
@@ -439,11 +476,14 @@ function groupLines($: EngineInterface, g: Group, v: View, el: Els) {
         <Box flexDirection="column" gap={1} paddingLeft={2} paddingTop={1}>
           {shown.map(r => fileLine($, r, v, { Box, Text, Button, Code, Svg }))}
           {files.length > FILES_SHOWN ? (
-            <Button key={`more-files:${g.key}`} plain onPress={() => toggleMore($, g.key)}>
-              <Text size="footnote" color="#9aa0a6">
-                {isAll ? 'Show less  ∧' : `Show ${files.length - FILES_SHOWN} more  ∨`}
-              </Text>
-            </Button>
+            moreToggle(
+              `more-files:${g.key}`,
+              isAll,
+              files.length - FILES_SHOWN,
+              () => toggleMore($, g.key),
+              { Box, Text, Button, Svg },
+              'flex-start',
+            )
           ) : null}
         </Box>
       ) : null}

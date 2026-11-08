@@ -332,3 +332,22 @@ export function liveDot(c: string): string {
 export function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
+
+/** A frosted-glass disc holding a thin chevron, as Apple draws its round controls. */
+export function glassChevron(dir: 'down' | 'up', size = 24): string {
+  const c = size / 2
+  const r = c - 1
+  const a = size * 0.2
+  const y = dir === 'down' ? c - a * 0.5 : c + a * 0.5
+  const tip = dir === 'down' ? c + a * 0.5 : c - a * 0.5
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">` +
+    `<defs>` +
+    `<radialGradient id="gf" cx="50%" cy="28%" r="75%"><stop offset="0" stop-color="#fff" stop-opacity="0.26"/><stop offset="1" stop-color="#fff" stop-opacity="0.09"/></radialGradient>` +
+    `<linearGradient id="gs" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.55"/><stop offset="0.55" stop-color="#fff" stop-opacity="0.10"/><stop offset="1" stop-color="#fff" stop-opacity="0.22"/></linearGradient>` +
+    `</defs>` +
+    `<circle cx="${c}" cy="${c}" r="${r}" fill="url(#gf)" stroke="url(#gs)" stroke-width="1"/>` +
+    `<path d="M${c - a} ${y} L${c} ${tip} L${c + a} ${y}" fill="none" stroke="#fff" stroke-opacity="0.95" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>` +
+    `</svg>`
+  )
+}

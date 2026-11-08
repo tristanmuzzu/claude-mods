@@ -322,9 +322,9 @@ test('four requests show at full size; the rest open below on Show more', async 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const rows = async () => ((await ui.findAll({ type: 'Svg' })) as any[]).filter(x => /^Request \d$/.test(String(x.props?.alt ?? ''))).length
   expect(await rows()).toBe(4)
-  expect((await ui.find({ type: 'Button', key: 'all-requests' }))?.text).toBe('Show 2 more  ∨')
+  expect((await ui.find({ type: 'Button', key: 'all-requests' }))?.text).toBe('Show 2 more')
   await ui.press({ key: 'all-requests' })
   expect(await rows()).toBe(6)
-  expect((await ui.find({ type: 'Button', key: 'all-requests' }))?.text).toBe('Show less  ∧')
+  expect((await ui.find({ type: 'Button', key: 'all-requests' }))?.text).toBe('Show less')
   await ui.unmount()
 })

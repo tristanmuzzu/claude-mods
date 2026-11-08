@@ -1,6 +1,6 @@
 {
   "name": "session-map",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "description": "A calm side pane: what Claude is doing right now and where its task list stands, each request told as what you asked and what came of it, and where each project's changes stand in git.",
   "license": "MIT",
   "types": "./types/index.d.ts"
