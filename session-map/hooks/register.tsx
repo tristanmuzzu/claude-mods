@@ -11,6 +11,7 @@ import {
   changeGroups,
   clip,
   clock,
+  diffRows,
   classify,
   describe,
   EMPTY,
@@ -182,7 +183,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
-    const { Box, Text, Button, Link, Code } = els
+    const { Box, Text, Button, Link } = els
     // The terminal draws no Svg: it gets plain text in its place.
     const Svg = e.surface !== 'terminal' && 'Svg' in els ? els.Svg : null
     const l = await read($, ledger)
@@ -290,7 +291,7 @@ export const register: Register = on => {
                 'all-requests',
                 v.showAllRequests,
                 all.length - STORIES_SHOWN,
-                () => flipAll($),
+                tap($, () => flipAll($)),
                 { Box, Text, Button, Svg },
                 'center',
               )
@@ -302,7 +303,7 @@ export const register: Register = on => {
         {groups.length ? (
           <Box key="changes" flexDirection="column" gap={1}>
             {section('Changes', '')}
-            {groups.map(g => groupLines($, g, v, { Box, Text, Button, Code, Svg }))}
+            {groups.map(g => groupLines($, g, v, { Box, Text, Button, Svg }))}
           </Box>
         ) : null}
       </Box>
@@ -379,7 +380,7 @@ function headTurn(l: Ledger): number {
 
 // ---------------------------------------------------------------- links
 
-type Els = { Box: any; Text: any; Button: any; Link?: any; Code?: any; Svg?: any }
+type Els = { Box: any; Text: any; Button: any; Link?: any; Svg?: any }
 
 function chipView($: EngineInterface, c: Chip, v: View, el: Els) {
   const { Box, Text, Button, Link } = el
@@ -396,7 +397,7 @@ function chipView($: EngineInterface, c: Chip, v: View, el: Els) {
         {c.label}
       </Text>
       {c.run ? (
-        <Button key={`copy:${c.label}`} plain onPress={(press: { surface: string }) => copyRun($, c.run ?? '', press.surface)}>
+        <Button key={pressKey(`copy:${c.label}`)} plain onPress={tap($, (press: { surface: string }) => copyRun($, c.run ?? '', press.surface))}>
           <Text size="footnote" color={INK.run}>
             {v.copied === c.run ? 'Copied' : 'Copy run command'}
           </Text>
@@ -426,7 +427,7 @@ function moreToggle(
   const words = isOpen ? 'Show less' : `Show ${hidden} more`
   return (
     <Box key={`wrap:${key}`} flexDirection="row" justifyContent={align} alignItems="center" gap={0}>
-      <Button key={key} plain onPress={onPress}>
+      <Button key={pressKey(key)} plain onPress={onPress}>
         <Text size="footnote" color="#c9ccd1">
           {words}
         </Text>
@@ -435,7 +436,7 @@ function moreToggle(
         <Box key={`disc:${key}`} position="relative">
           <Svg source={chevron(isOpen ? 'up' : 'down', CHEV)} width={CHEV} height={CHEV} alt={words} />
           <Box position="absolute" top={0} left={0} width="100%" height="100%">
-            <Button key={`${key}:disc`} plain onPress={onPress}>
+            <Button key={pressKey(`${key}:disc`)} plain onPress={onPress}>
               {'\u2003\u2003'}
             </Button>
           </Box>
@@ -448,7 +449,7 @@ function moreToggle(
 }
 
 function groupLines($: EngineInterface, g: Group, v: View, el: Els) {
-  const { Box, Text, Button, Code, Svg } = el
+  const { Box, Text, Button, Svg } = el
   const isOpen = v.openRepos.includes(g.key)
   // Claude's own edits first, then what commands changed: every file is listed.
   const files = [...g.files, ...g.byCommands]
@@ -456,7 +457,7 @@ function groupLines($: EngineInterface, g: Group, v: View, el: Els) {
   const shown = isAll ? files : files.slice(0, FILES_SHOWN)
   return (
     <Box key={`group:${g.key}`} flexDirection="column" gap={0}>
-      <Button key={`group-btn:${g.key}`} plain onPress={() => toggleRepo($, g.key)}>
+      <Button key={pressKey(`group-btn:${g.key}`)} plain onPress={tap($, () => toggleRepo($, g.key))}>
         <Text color={QUIET}>{files.length ? (isOpen ? '▾ ' : '▸ ') : ''}</Text>
         <Text weight="semibold">{g.name}</Text>
         <Text dimColor>{g.branch ? ` · ${g.branch}` : ''}</Text>
@@ -474,13 +475,13 @@ function groupLines($: EngineInterface, g: Group, v: View, el: Els) {
       </Box>
       {isOpen ? (
         <Box flexDirection="column" gap={1} paddingLeft={2} paddingTop={1}>
-          {shown.map(r => fileLine($, r, v, { Box, Text, Button, Code, Svg }))}
+          {shown.map(r => fileLine($, r, v, { Box, Text, Button, Svg }))}
           {files.length > FILES_SHOWN ? (
             moreToggle(
               `more-files:${g.key}`,
               isAll,
               files.length - FILES_SHOWN,
-              () => toggleMore($, g.key),
+              tap($, () => toggleMore($, g.key)),
               { Box, Text, Button, Svg },
               'flex-start',
             )
@@ -507,7 +508,7 @@ function shortDir(dir: string): string {
 }
 
 function fileLine($: EngineInterface, r: FileRow, v: View, el: Els) {
-  const { Box, Text, Button, Code, Svg } = el
+  const { Box, Text, Button, Svg } = el
   const isOpen = v.openPath === r.path
   const word = r.isDeleted ? 'deleted' : r.state === 'new' ? 'new' : r.state === 'editing' ? 'editing now' : ''
   const color = r.isDeleted ? QUIET : r.state === 'editing' ? INK.edit : '#e8e8e8'
@@ -517,7 +518,7 @@ function fileLine($: EngineInterface, r: FileRow, v: View, el: Els) {
       <Box flexDirection="row" gap={1} alignItems="center">
         {Svg ? <Svg source={badge(r.name)} width={30} height={18} alt={r.name} /> : null}
         <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} gap={0}>
-          <Button key={`open:${r.path}`} plain onPress={() => openFile($, r)}>
+          <Button key={pressKey(`open:${r.path}`)} plain onPress={tap($, () => openFile($, r))}>
             <Text color={color} weight="medium" wrap="truncate-end">
               {r.name}
             </Text>
@@ -535,21 +536,66 @@ function fileLine($: EngineInterface, r: FileRow, v: View, el: Els) {
         ) : null}
         {r.isDeleted ? null : (
           // A Button holds text alone (a drawn icon cannot take the press), so the edit icon is a glyph.
-          <Button key={`edit:${r.path}`} plain dimColor onPress={() => openInEditor($, r.path)}>
+          <Button key={pressKey(`edit:${r.path}`)} plain dimColor onPress={tap($, () => openInEditor($, r.path))}>
             <Text color={wasOpened ? DONE : '#9fbfff'}>{wasOpened ? '✓' : '✎'}</Text>
           </Button>
         )}
       </Box>
-      {isOpen && Code ? (
+      {isOpen ? (
         v.openDiff || r.diff ? (
-          <Box paddingTop={1}>
-            <Code format="diff" source={v.openDiff || r.diff} path={r.path} wrap="truncate-end" />
-          </Box>
+          diffView(r.path, v.openDiff || r.diff, el)
         ) : (
           <Text size="caption" dimColor>
             No line changes to show.
           </Text>
         )
+      ) : null}
+    </Box>
+  )
+}
+
+/** Most diff rows drawn inline; the rest are a press away in the editor. */
+const DIFF_ROWS = 400
+const ROW_TINT = { add: '#1f3a2a', del: '#4a2226', ctx: undefined, gap: undefined } as const
+const ROW_INK = { add: 'diffAdded', del: 'diffRemoved', ctx: '#c9ccd3', gap: QUIET } as const
+const ROW_MARK = { add: '+', del: '−', ctx: ' ', gap: '' } as const
+
+/**
+ * A diff drawn as plain rows, one per line, as an editor shows a change: line number, a +/− mark,
+ * the text on a green or red tint. Long lines end in an ellipsis; the file itself has them whole.
+ */
+function diffView(path: string, diff: string, el: Els) {
+  const { Box, Text } = el
+  const rows = diffRows(diff)
+  const shown = rows.slice(0, DIFF_ROWS)
+  const width = String(shown.reduce((m, r) => Math.max(m, r.num ?? 0), 0)).length
+  return (
+    <Box key={`diff:${path}`} flexDirection="column" paddingTop={1} gap={0}>
+      {shown.map((r, i) =>
+        r.kind === 'gap' ? (
+          <Text key={`d:${i}`} size="caption" mono dimColor>
+            {'⋯'}
+          </Text>
+        ) : (
+          <Box key={`d:${i}`} flexDirection="row" gap={1} backgroundColor={ROW_TINT[r.kind]}>
+            <Text size="caption" mono dimColor tabular>
+              {String(r.num ?? '').padStart(width, '\u2007')}
+            </Text>
+            <Text size="caption" mono color={ROW_INK[r.kind]}>
+              {ROW_MARK[r.kind]}
+            </Text>
+            <Box flexGrow={1} flexShrink={1} minWidth={0}>
+              <Text size="caption" mono color={ROW_INK[r.kind]} wrap="truncate-end">
+                {r.text.replace(/\t/g, '  ') || '\u00a0'}
+              </Text>
+            </Box>
+          </Box>
+        ),
+      )}
+      {rows.length > DIFF_ROWS ? (
+        <Text size="caption" dimColor>
+          {`${rows.length - DIFF_ROWS} more lines: open the file to see them all`}
+        </Text>
       ) : null}
     </Box>
   )
@@ -730,6 +776,24 @@ async function rescan($: EngineInterface) {
     await safely($, x => ({ ...x, repos: fresh }))
   } catch {
     // Try again after the next change.
+  }
+}
+
+/**
+ * Every press renames the pane's buttons. The app redraws a pane by swapping in a whole new tree
+ * and then focusing the button that has the focused one's key; that refocus in the middle of the
+ * swap let the browser shift the scroll, so while a pressed button kept focus each redraw pulled
+ * the pane down (scrolling an open diff snapped to the bottom). Once the old key is gone the
+ * pressed button lets go of focus, as after a click outside the pane, and the pane stays put.
+ */
+let presses = 0
+export const pressKey = (key: string) => `${key}~${presses}`
+function tap<A extends unknown[]>($: EngineInterface, act: (...a: A) => unknown) {
+  return async (...a: A) => {
+    presses += 1
+    await act(...a)
+    // Redraw even when the press changed nothing on screen, so the old key goes now.
+    await update($, view, x => ({ ...x }))
   }
 }
 

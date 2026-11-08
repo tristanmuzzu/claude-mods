@@ -639,3 +639,37 @@ export function short(n: number): string {
   if (n >= 1000) return `${Math.round(n / 1000)}k`
   return String(n)
 }
+
+/** One row of a diff as the pane draws it: what kind of line, its number in the file, its text. */
+export type DiffRow = { kind: 'add' | 'del' | 'ctx' | 'gap'; num: number | null; text: string }
+
+/**
+ * A unified diff as editor-style rows: added and removed lines with the line number they have
+ * in the new or old file, unchanged context between, and a gap row where a hunk skips ahead.
+ * The `---`/`+++` header and `\ No newline` markers are left out.
+ */
+export function diffRows(diff: string): DiffRow[] {
+  const rows: DiffRow[] = []
+  let oldN = 0
+  let newN = 0
+  let seenHunk = false
+  for (const line of diff.split('\n')) {
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
+    if (hunk) {
+      if (seenHunk) rows.push({ kind: 'gap', num: null, text: '' })
+      seenHunk = true
+      oldN = Number(hunk[1])
+      newN = Number(hunk[2])
+      continue
+    }
+    if (!seenHunk || line.startsWith('\\')) continue
+    if (line.startsWith('+')) rows.push({ kind: 'add', num: newN++, text: line.slice(1) })
+    else if (line.startsWith('-')) rows.push({ kind: 'del', num: oldN++, text: line.slice(1) })
+    else if (line.startsWith(' ')) {
+      rows.push({ kind: 'ctx', num: newN, text: line.slice(1) })
+      oldN++
+      newN++
+    }
+  }
+  return rows
+}

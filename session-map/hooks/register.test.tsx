@@ -2,7 +2,17 @@ import { expect, test } from 'claude-code/testing'
 
 import { glyph, mark, rings, timelineRow, track } from './art'
 import { cutDiff, parseLog, parseStatus } from './git'
-import { applyPlan, changeGroups, EMPTY, fileRows, place, promptText, stories } from './model'
+import { applyPlan, changeGroups, diffRows, EMPTY, fileRows, place, promptText, stories } from './model'
+
+/** A pane Button by its key without the press count the pane adds to every key (see pressKey). */
+async function button(ui: { findAll: (q: { type: string }) => Promise<{ key: string | undefined; text?: string }[]> }, key: string) {
+  return (await ui.findAll({ type: 'Button' })).find(b => b.key?.replace(/~\d+$/, '') === key)
+}
+async function press(ui: Parameters<typeof button>[0] & { press: (t: { key: string }) => Promise<unknown> }, key: string) {
+  const found = await button(ui, key)
+  if (!found?.key) throw new Error(`no Button keyed ${key}`)
+  await ui.press({ key: found.key })
+}
 
 const PANE = {
   plugin: 'session-map',
@@ -76,20 +86,24 @@ test('the pane tells the request as a story and rolls changes up by project', as
       expect(svgs.some(x => /Make the sidebar better/.test(String(x.props?.alt ?? '')))).toBe(true)
     }
     // The pane no longer lists every file up front: one line per project.
-    expect(await ui.find({ type: 'Button', key: `open:${PROJECT}/a.ts` })).toBeFalsy()
-    expect((await ui.find({ type: 'Button', key: 'group-btn:claude-mods' }))?.text).toContain('claude-mods')
+    expect(await button(ui, `open:${PROJECT}/a.ts`)).toBeFalsy()
+    expect((await button(ui, 'group-btn:claude-mods'))?.text).toContain('claude-mods')
     await ui.unmount()
   }
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await ui.press({ key: 'group-btn:claude-mods' })
-  await ui.press({ key: `open:${PROJECT}/a.ts` })
-  const code = await ui.find({ type: 'Code' })
-  expect(code?.text).toContain('-two')
-  expect(code?.text).toContain('+3')
-  expect(await ui.find({ type: 'Button', key: 'copy:Script: run.sh' })).toBeTruthy()
+  await press(ui, 'group-btn:claude-mods')
+  await press(ui, `open:${PROJECT}/a.ts`)
+  // The diff is drawn as plain rows: no Code element, whose late re-layout made the pane jump.
+  expect(await ui.find({ type: 'Code' })).toBeFalsy()
+  const diff = (await ui.find({ type: 'Box', key: `diff:${PROJECT}/a.ts` }))?.text ?? ''
+  expect(diff).toContain('−')
+  expect(diff).toContain('two')
+  expect(diff).toContain('+')
+  expect(diff).toContain('3')
+  expect(await button(ui, 'copy:Script: run.sh')).toBeTruthy()
   // Every listed file can be sent to the editor.
-  await ui.press({ key: `edit:${PROJECT}/a.ts` })
+  await press(ui, `edit:${PROJECT}/a.ts`)
   expect(opened.map(a => a[a.length - 1])).toEqual([`${PROJECT}/a.ts`])
   expect(toasts).toEqual([])
   // The kit runs the 2s reset of the "Opened" label at once, so the label is not checked here.
@@ -322,9 +336,27 @@ test('four requests show at full size; the rest open below on Show more', async 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const rows = async () => ((await ui.findAll({ type: 'Svg' })) as any[]).filter(x => /^Request \d$/.test(String(x.props?.alt ?? ''))).length
   expect(await rows()).toBe(4)
-  expect((await ui.find({ type: 'Button', key: 'all-requests' }))?.text).toBe('Show 2 more')
-  await ui.press({ key: 'all-requests' })
+  const before = await button(ui, 'all-requests')
+  expect(before?.text).toBe('Show 2 more')
+  await press(ui, 'all-requests')
+  // A press renames the buttons, so the pressed one lets go of focus instead of holding the pane.
+  expect((await button(ui, 'all-requests'))?.key).not.toBe(before?.key)
   expect(await rows()).toBe(6)
-  expect((await ui.find({ type: 'Button', key: 'all-requests' }))?.text).toBe('Show less')
+  expect((await button(ui, 'all-requests'))?.text).toBe('Show less')
   await ui.unmount()
+})
+
+test('a diff becomes editor rows with line numbers', () => {
+  const rows = diffRows(
+    ['--- a/x.ts', '+++ b/x.ts', '@@ -3,3 +3,3 @@', ' one', '-two', '+2', ' three', '@@ -40,1 +40,2 @@', ' end', '+tail', '\\ No newline at end of file'].join('\n'),
+  )
+  expect(rows.map(r => `${r.kind}:${r.num ?? ''}:${r.text}`)).toEqual([
+    'ctx:3:one',
+    'del:4:two',
+    'add:4:2',
+    'ctx:5:three',
+    'gap::',
+    'ctx:40:end',
+    'add:41:tail',
+  ])
 })
