@@ -437,7 +437,7 @@ export function stories(l: Ledger, now: number): Story[] {
       }
       return {
         n: t.n,
-        text: t.text,
+        text: promptText(t.text) || 'A request made before the map could read it',
         at: t.at,
         ms: t.endedAt ? t.endedAt - t.at : isNow ? now - t.at : null,
         isNow,
@@ -523,6 +523,19 @@ export function changeGroups(l: Ledger): Group[] {
 }
 
 // ---------------------------------------------------------------- small helpers
+
+/**
+ * What the person typed, without the context the app wraps around a prompt
+ * (system reminders, pasted-content tags). A reminder cut off by an earlier
+ * clip has no closing tag, so an open one runs to the end.
+ */
+export function promptText(s: string): string {
+  return s
+    .replace(/<(system-reminder|ide_[a-z_]+|local-command-[a-z]+|command-[a-z]+)\b[^>]*>[\s\S]*?(<\/\1>|$)/g, ' ')
+    .replace(/<\/?pasted_content[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
 
 export function str(v: unknown): string {
   return typeof v === 'string' ? v : ''

@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { glyph, mark, track } from './art'
 import { cutDiff, parseLog, parseStatus } from './git'
-import { applyPlan, changeGroups, EMPTY, fileRows, place, stories } from './model'
+import { applyPlan, changeGroups, EMPTY, fileRows, place, promptText, stories } from './model'
 
 const PANE = {
   plugin: 'session-map',
@@ -227,4 +227,11 @@ test('drawings are well-formed SVG', () => {
 test('paths are grouped by the place Tristan knows them by', () => {
   expect(place('/home/tristan/projects/deskwright/src/a.py')).toEqual({ root: 'deskwright', rel: 'src/a.py' })
   expect(place('/home/tristan/.claude/docs/harness.md')).toEqual({ root: 'Claude config', rel: 'docs/harness.md' })
+})
+
+test('a request is shown as typed, without the context the app wraps around it', () => {
+  expect(promptText('<system-reminder>\nlots of context\n</system-reminder>\nMake the sidebar calmer')).toBe('Make the sidebar calmer')
+  // An earlier clip cut the reminder off before its closing tag.
+  expect(promptText('<system-reminder> The user started this session without a folder')).toBe('')
+  expect(promptText('<pasted_content id="x">log line</pasted_content> fix this')).toBe('log line fix this')
 })

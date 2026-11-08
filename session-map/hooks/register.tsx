@@ -16,6 +16,7 @@ import {
   EMPTY,
   pathOf,
   planPlace,
+  promptText,
   PLUMBING,
   settle,
   short,
@@ -224,7 +225,7 @@ export const register: Register = on => {
         <Box key="now" flexDirection="column" gap={1} padding={1} backgroundColor="#232427" borderStyle="round" borderColor={hero.isLive ? tint : '#34363a'}>
           <Box flexDirection="row" gap={1} alignItems="center">
             {Svg ? <Svg source={glyph(hero.mood, hero.isLive)} width={56} height={56} alt={`${hero.eyebrow}: ${hero.headline}`} isInteractive /> : null}
-            <Box flexDirection="column" flexShrink={1} gap={0}>
+            <Box flexDirection="column" flexShrink={1} minWidth={0} gap={0}>
               <Text size="caption" weight="bold" color={tint}>
                 {hero.eyebrow}
               </Text>
@@ -243,7 +244,7 @@ export const register: Register = on => {
             <Box flexDirection="column" gap={0}>
               <Text size="caption" dimColor wrap="truncate-end">
                 {place.current
-                  ? `Step ${place.index + 1} of ${place.total}  ·  `
+                  ? `Step ${place.index + 1} of ${place.total} · `
                   : place.done === place.total
                     ? `All ${place.total} steps done`
                     : `${place.done} of ${place.total} steps done`}
@@ -260,7 +261,7 @@ export const register: Register = on => {
                   {Svg ? <Svg source={liveDot(INK.agent)} width={10} height={10} alt="helper working" /> : null}
                   <Text size="footnote" wrap="truncate-end">
                     {h.label.replace(/^Helper: /, '')}
-                    <Text dimColor>{`  helper · ${since(now - h.at)}`}</Text>
+                    <Text dimColor>{` · helper · ${since(now - h.at)}`}</Text>
                   </Text>
                 </Box>
               ))}
@@ -275,7 +276,7 @@ export const register: Register = on => {
 
           {main ? (
             <Text size="caption" dimColor wrap="truncate-end">
-              {`${main.name}  ·  ${main.branch}${main.ahead ? `  ↑${main.ahead}` : ''}${main.behind ? `  ↓${main.behind}` : ''}`}
+              {`${main.name} · ${main.branch}${main.ahead ? ` ↑${main.ahead}` : ''}${main.behind ? ` ↓${main.behind}` : ''}`}
             </Text>
           ) : null}
         </Box>
@@ -333,7 +334,7 @@ function heroOf(l: Ledger, last: Story | null, now: number): Hero {
   if (l.isWorking && mainLive) {
     return {
       mood: mainLive.kind,
-      eyebrow: `${DOING[mainLive.kind]}  ·  ${since(now - mainLive.at)}`,
+      eyebrow: `${DOING[mainLive.kind]} · ${since(now - mainLive.at)}`,
       headline: mainLive.label,
       detail: last ? `You asked: ${clip(last.text, 120)}` : '',
       isLive: true,
@@ -343,7 +344,7 @@ function heroOf(l: Ledger, last: Story | null, now: number): Hero {
   if (l.isWorking && helpers.length) {
     return {
       mood: 'agent',
-      eyebrow: `Helpers at work  ·  ${helpers.length}`,
+      eyebrow: `Helpers at work · ${helpers.length}`,
       headline: helpers.length === 1 ? (helpers[0]?.label.replace(/^Helper: /, '') ?? '') : `${helpers.length} helpers working in parallel`,
       detail: last ? `You asked: ${clip(last.text, 120)}` : '',
       isLive: true,
@@ -353,7 +354,7 @@ function heroOf(l: Ledger, last: Story | null, now: number): Hero {
   if (l.isWorking) {
     return {
       mood: 'thinking',
-      eyebrow: `Thinking  ·  ${last?.ms != null ? since(last.ms) : ''}`,
+      eyebrow: `Thinking · ${last?.ms != null ? since(last.ms) : ''}`,
       headline: plan.current ? plan.current.text : 'Working out the next step',
       detail: last ? `You asked: ${clip(last.text, 120)}` : '',
       isLive: true,
@@ -365,7 +366,7 @@ function heroOf(l: Ledger, last: Story | null, now: number): Hero {
   }
   const took = last.ms != null ? `took ${since(last.ms)}` : ''
   if (last.end === 'aborted') {
-    return { mood: 'stopped', eyebrow: 'Stopped', headline: 'You stopped the last request', detail: [last.work, took].filter(Boolean).join('  ·  '), isLive: false, usesRecap: false }
+    return { mood: 'stopped', eyebrow: 'Stopped', headline: 'You stopped the last request', detail: [last.work, took].filter(Boolean).join(' · '), isLive: false, usesRecap: false }
   }
   if (last.end === 'error' || last.end === 'refusal') {
     return {
@@ -383,7 +384,7 @@ function heroOf(l: Ledger, last: Story | null, now: number): Hero {
   }
   return {
     mood: 'done',
-    eyebrow: `Done  ·  ${[took, last.ms != null ? `at ${clock(last.at + last.ms)}` : ''].filter(Boolean).join(' ')}`,
+    eyebrow: `Done · ${[took, last.ms != null ? `at ${clock(last.at + last.ms)}` : ''].filter(Boolean).join(' ')}`,
     headline: first || doneLine(last),
     detail: first ? rest : '',
     isLive: false,
@@ -437,11 +438,11 @@ type Els = { Box: any; Text: any; Button: any; Link?: any; Code?: any; Svg?: any
 function storyLine($: EngineInterface, s: Story, isInHero: boolean, v: View, el: Els, now: number) {
   const { Box, Text, Button, Link, Svg } = el
   const m: MarkKind = s.isNow ? 'live' : s.end === 'aborted' || s.end === 'error' ? 'stopped' : s.ask ? 'ask' : s.ms !== null ? 'done' : 'quiet'
-  const meta = [s.isNow ? 'now' : clock(s.at), s.ms !== null ? since(s.ms) : '', s.work].filter(Boolean).join('  ·  ')
+  const meta = [s.isNow ? 'now' : clock(s.at), s.ms !== null ? since(s.ms) : '', s.work].filter(Boolean).join(' · ')
   return (
-    <Box key={`story:${s.n}`} flexDirection="row" gap={1} paddingX={1}>
+    <Box key={`story:${s.n}`} flexDirection="row" gap={1} paddingX={1} minWidth={0}>
       <Box paddingTop={0}>{Svg ? <Svg source={mark(m, '#e07a52')} width={14} height={14} alt={m} isInteractive={s.isNow} /> : null}</Box>
-      <Box flexDirection="column" gap={0} flexShrink={1} flexGrow={1}>
+      <Box flexDirection="column" gap={0} flexShrink={1} flexGrow={1} minWidth={0}>
         <Text weight={s.isNow ? 'semibold' : 'medium'} wrap="wrap">
           {clip(s.text, s.isNow ? 160 : 110)}
         </Text>
@@ -503,9 +504,9 @@ function groupLines($: EngineInterface, g: Group, v: View, el: Els) {
   return (
     <Box key={`group:${g.key}`} flexDirection="column" gap={0} paddingX={1}>
       <Button key={`group-btn:${g.key}`} plain onPress={() => toggleRepo($, g.key)}>
-        <Text color={QUIET}>{count ? (isOpen ? '▾ ' : '▸ ') : '  '}</Text>
+        <Text color={QUIET}>{count ? (isOpen ? '▾ ' : '▸ ') : ''}</Text>
         <Text weight="semibold">{g.name}</Text>
-        <Text dimColor>{g.branch ? `  ${g.branch}` : ''}</Text>
+        <Text dimColor>{g.branch ? ` · ${g.branch}` : ''}</Text>
       </Button>
       <Box flexDirection="row" gap={1} paddingLeft={2}>
         <Text size="footnote" color={TONE[g.tone]}>
@@ -557,7 +558,7 @@ function fileLine($: EngineInterface, r: FileRow, v: View, el: Els) {
             <Text color={color} wrap="truncate-end">
               {r.name}
             </Text>
-            <Text size="caption" dimColor>{`  ${[r.dir, word].filter(Boolean).join(' · ')}`}</Text>
+            <Text size="caption" dimColor>{` · ${[r.dir, word].filter(Boolean).join(' · ')}`}</Text>
           </Button>
         </Box>
         {r.added || r.removed ? (
@@ -637,7 +638,8 @@ async function vitals($: EngineInterface, context: RawContext, limits: RawLimit[
 }
 
 async function noteRequest($: EngineInterface, text: string) {
-  const clean = text.replace(/\s+/g, ' ').trim().slice(0, 240)
+  const clean = promptText(text).slice(0, 240)
+  if (!clean) return
   await safely($, l => ({ ...l, turns: [...l.turns, { n: l.turns.length + 1, text: clean, at: Date.now(), endedAt: null }].slice(-120) }))
 }
 
