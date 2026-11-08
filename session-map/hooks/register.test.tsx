@@ -33,11 +33,25 @@ function engine(on: any) {
   on('turn.complete', () => ({ text: '' }))
   on('clock.every', () => ({ value: {} }))
   on('clock.after', () => ({ value: {} }))
+  on('ui.toast', (_: unknown, e: any) => {
+    toasts.push(String(e.text ?? e))
+    return { value: undefined }
+  })
+  on('process.run', (_: unknown, e: any) => {
+    if (e.argv?.[0] === 'sh') {
+      opened.push(e.argv)
+      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    return { value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
   on('tool.call', (_: unknown, e: any) => {
     if (e.tool === 'Write') return { result: {}, text: `File created successfully at: ${e.file_path}` }
     return { result: {}, text: 'ok' }
   })
 }
+
+const opened: string[][] = []
+const toasts: string[] = []
 
 const texts = async (ui: any) => (await ui.findAll({ type: 'Text' })).map((t: any) => t.text as string) as string[]
 
@@ -74,6 +88,11 @@ test('the pane tells the request as a story and rolls changes up by project', as
   expect(code?.text).toContain('-two')
   expect(code?.text).toContain('+3')
   expect(await ui.find({ type: 'Button', key: 'copy:Script: run.sh' })).toBeTruthy()
+  // Every listed file can be sent to the editor.
+  await ui.press({ key: `edit:${PROJECT}/a.ts` })
+  expect(opened.map(a => a[a.length - 1])).toEqual([`${PROJECT}/a.ts`])
+  expect(toasts).toEqual([])
+  // The kit runs the 2s reset of the "Opened" label at once, so the label is not checked here.
   await ui.unmount()
 })
 
@@ -168,7 +187,7 @@ test('git status, numstat and log are read', () => {
   expect(cutDiff('diff --git a/x b/x\nindex 1..2\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n')).toBe('--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b')
 })
 
-test('shell changes are counted under their project, not listed one by one', () => {
+test('shell changes are grouped under their project', () => {
   const l = {
     ...EMPTY,
     repos: [

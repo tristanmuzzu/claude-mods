@@ -265,6 +265,8 @@ export type FileRow = {
   removed: number
   at: number
   isShell: boolean
+  /** Deleted in the working tree: nothing left to open. */
+  isDeleted: boolean
   diff: string
   repo: Repo | null
 }
@@ -312,6 +314,7 @@ export function fileRows(l: Ledger): FileRow[] {
       removed,
       at,
       isShell,
+      isDeleted: Boolean(git?.code.includes('D')),
       diff: t?.diff ?? '',
       repo,
     }

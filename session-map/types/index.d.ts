@@ -108,6 +108,10 @@ export type View = {
   openDiff: string | null
   /** Projects whose file list is open in Changes. */
   openRepos: string[]
+  /** Projects whose whole file list is open, past the first few. */
+  moreRepos?: string[]
+  /** The file just sent to the editor, for a moment's feedback. */
+  opened?: string | null
   showAllRequests: boolean
   tick: number
   copied: string | null

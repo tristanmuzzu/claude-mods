@@ -65,12 +65,16 @@ shape and colour rather than text. Top to bottom:
   not). Hover a request for the whole text and its recap. Background-task and
   app messages fold into the request they belong to.
 - **Changes**: one line per project with where it stands in git ("3 files
-  not committed", "2 commits, all pushed"). Press it for the files; press a
-  file for its diff. Files changed by shell commands are counted, not listed.
+  not committed", "2 commits, all pushed"). Press it to list every changed
+  file, Claude's own edits first and then what commands changed (eight at a
+  time, Show more for the rest). Press a file for its diff, or **Open ↗** to
+  open it in your code editor: the first of VS Code, Cursor, Zed, Codium,
+  Sublime Text or GNOME Text Editor that is installed.
 
 It reads the session's own tool calls (including the app's task list and
 wrap-up) and runs read-only git commands (`status`, `diff`, `log`). It makes
-no model calls and no network requests and writes no files. `/map` opens it
+no model calls and no network requests and writes no files; the one program
+it starts on its own is your editor, when you press Open. `/map` opens it
 again if you close it.
 
 ## Install

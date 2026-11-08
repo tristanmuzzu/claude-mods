@@ -407,14 +407,20 @@ function chipView($: EngineInterface, c: Chip, v: View, el: Els) {
 
 // ---------------------------------------------------------------- Changes
 
+/** Files listed in an open project before "Show more". */
+const FILES_SHOWN = 8
+
 function groupLines($: EngineInterface, g: Group, v: View, el: Els) {
   const { Box, Text, Button, Code } = el
   const isOpen = v.openRepos.includes(g.key)
-  const count = g.files.length + g.byCommands.length
+  // Claude's own edits first, then what commands changed: every file is listed.
+  const files = [...g.files, ...g.byCommands]
+  const isAll = (v.moreRepos ?? []).includes(g.key)
+  const shown = isAll ? files : files.slice(0, FILES_SHOWN)
   return (
     <Box key={`group:${g.key}`} flexDirection="column" gap={0}>
       <Button key={`group-btn:${g.key}`} plain onPress={() => toggleRepo($, g.key)}>
-        <Text color={QUIET}>{count ? (isOpen ? '▾ ' : '▸ ') : ''}</Text>
+        <Text color={QUIET}>{files.length ? (isOpen ? '▾ ' : '▸ ') : ''}</Text>
         <Text weight="semibold">{g.name}</Text>
         <Text dimColor>{g.branch ? ` · ${g.branch}` : ''}</Text>
       </Button>
@@ -430,12 +436,14 @@ function groupLines($: EngineInterface, g: Group, v: View, el: Els) {
         ) : null}
       </Box>
       {isOpen ? (
-        <Box flexDirection="column" gap={0} paddingLeft={2} paddingTop={1}>
-          {g.files.slice(0, 20).map(r => fileLine($, r, v, { Box, Text, Button, Code }))}
-          {g.byCommands.length ? (
-            <Text size="footnote" dimColor>
-              {`${g.files.length ? '+ ' : ''}${g.byCommands.length} file${g.byCommands.length === 1 ? '' : 's'} changed by commands`}
-            </Text>
+        <Box flexDirection="column" gap={1} paddingLeft={2} paddingTop={1}>
+          {shown.map(r => fileLine($, r, v, { Box, Text, Button, Code }))}
+          {files.length > FILES_SHOWN ? (
+            <Button key={`more-files:${g.key}`} plain onPress={() => toggleMore($, g.key)}>
+              <Text size="footnote" color="#9aa0a6">
+                {isAll ? 'Show less  ∧' : `Show ${files.length - FILES_SHOWN} more  ∨`}
+              </Text>
+            </Button>
           ) : null}
         </Box>
       ) : null}
@@ -452,21 +460,32 @@ const FILE_WORD: Record<string, string> = {
   pushed: 'pushed',
 }
 
+/** The folder a file sits in, cut to its last two parts so the name leads. */
+function shortDir(dir: string): string {
+  const parts = dir.split('/').filter(Boolean)
+  return parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : parts.join('/')
+}
+
 function fileLine($: EngineInterface, r: FileRow, v: View, el: Els) {
   const { Box, Text, Button, Code } = el
   const isOpen = v.openPath === r.path
-  const word = FILE_WORD[r.state] ?? ''
-  const color = r.state === 'pushed' || r.state === 'committed' ? DONE : r.state === 'editing' ? INK.edit : '#e6e6e6'
+  const word = r.isDeleted ? 'deleted' : (FILE_WORD[r.state] ?? '')
+  const color = r.isDeleted ? QUIET : r.state === 'pushed' || r.state === 'committed' ? DONE : r.state === 'editing' ? INK.edit : '#e6e6e6'
   return (
     <Box key={`file:${r.path}`} flexDirection="column" gap={0}>
-      <Box flexDirection="row" gap={1} justifyContent="space-between">
-        <Box flexShrink={1}>
+      <Box flexDirection="row" gap={1} alignItems="center">
+        <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} gap={0}>
           <Button key={`open:${r.path}`} plain onPress={() => openFile($, r)}>
-            <Text color={color} wrap="truncate-end">
+            <Text color={QUIET}>{isOpen ? '▾ ' : '▸ '}</Text>
+            <Text color={color} weight="medium" wrap="truncate-end">
               {r.name}
             </Text>
-            <Text size="caption" dimColor>{` · ${[r.dir, word].filter(Boolean).join(' · ')}`}</Text>
           </Button>
+          <Box paddingLeft={2}>
+            <Text size="caption" dimColor wrap="truncate-end">
+              {[shortDir(r.dir), word].filter(Boolean).join(' · ')}
+            </Text>
+          </Box>
         </Box>
         {r.added || r.removed ? (
           <Text size="caption" tabular>
@@ -474,6 +493,13 @@ function fileLine($: EngineInterface, r: FileRow, v: View, el: Els) {
             <Text color="diffRemoved">{` −${r.removed}`}</Text>
           </Text>
         ) : null}
+        {r.isDeleted ? null : (
+          <Button key={`edit:${r.path}`} plain label={`Open ${r.name} in the editor`} onPress={() => openInEditor($, r.path)}>
+            <Text size="footnote" color={v.opened === r.path ? DONE : '#8fb4ff'}>
+              {v.opened === r.path ? 'Opened' : 'Open ↗'}
+            </Text>
+          </Button>
+        )}
       </Box>
       {isOpen && Code ? (
         v.openDiff || r.diff ? (
@@ -673,6 +699,37 @@ async function toggleRepo($: EngineInterface, key: string) {
     ...x,
     openRepos: x.openRepos.includes(key) ? x.openRepos.filter(k => k !== key) : [...x.openRepos, key],
   }))
+}
+
+async function toggleMore($: EngineInterface, key: string) {
+  await update($, view, x => {
+    const more = x.moreRepos ?? []
+    return { ...x, moreRepos: more.includes(key) ? more.filter(k => k !== key) : [...more, key] }
+  })
+}
+
+/**
+ * The first code editor installed, launched detached so it outlives the call;
+ * `gio open` only when there is none. File types alone pick badly here (a
+ * .tsx file reads as a game map and opens in a hex editor).
+ */
+const OPEN_IN_EDITOR = [
+  'for e in code cursor zed zeditor codium subl gnome-text-editor gedit kate; do',
+  '  if command -v "$e" >/dev/null 2>&1; then setsid -f "$e" "$1" >/dev/null 2>&1; exit 0; fi',
+  'done',
+  'exec gio open "$1"',
+].join('\n')
+
+async function openInEditor($: EngineInterface, path: string) {
+  const r = await $.process
+    .run(['sh', '-c', OPEN_IN_EDITOR, 'open-in-editor', path], { timeoutMs: 8000 })
+    .catch((err: unknown) => ({ exitCode: -1, stderr: String(err) }))
+  if (r.exitCode !== 0) {
+    $.ui.toast(`Could not open ${path.slice(path.lastIndexOf('/') + 1)}: ${String(r.stderr).trim().slice(0, 160) || 'no editor found'}`)
+    return
+  }
+  await update($, view, x => ({ ...x, opened: path }))
+  $.clock.after(2000, () => void update($, view, x => (x.opened === path ? { ...x, opened: null } : x)))
 }
 
 async function openFile($: EngineInterface, r: FileRow) {
