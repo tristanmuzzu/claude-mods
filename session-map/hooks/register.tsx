@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { Kind, Ledger, PlanItem, Probe, Repo, TurnEnd, View } from '../types'
-import { DONE, glyph, INK, liveDot, moodColor, QUIET, rings, timeline, track, WAIT } from './art'
+import { DONE, glyph, INK, liveDot, moodColor, QUIET, rings, RINGS_H, timeline, track, WAIT } from './art'
 import type { Mood } from './art'
 import { diffOf, gitTrouble, rootOf, scan } from './git'
 import {
@@ -189,8 +189,9 @@ export const register: Register = on => {
     const now = Date.now()
     // Desktop columns are about 11px; cards take their padding and border out of that.
     const cols = e.props.bodyColumns ?? 33
-    const W = Math.max(200, Math.round(cols * 11 - 72))
-    const WIDE = Math.max(220, Math.round(cols * 11 - 46))
+    // The pane's own inset leaves about 40px of the columns undrawn.
+    const WIDE = Math.max(220, Math.round(cols * 11 - 40))
+    const W = WIDE - 26
     void note($, { surface: e.surface, bodyColumns: e.props.bodyColumns, placement: e.props.placement, at: now })
 
     const all = stories(l, now)
@@ -205,8 +206,8 @@ export const register: Register = on => {
     const links = all.flatMap(s => s.chips.filter(c => c.href || c.run)).slice(0, 4)
 
     const section = (title: string, note: string) => (
-      <Box flexDirection="row" gap={1} paddingX={1} alignItems="center">
-        <Text size="footnote" weight="semibold" color="#d6d6d6">
+      <Box flexDirection="row" gap={1} alignItems="center">
+        <Text size="body" weight="semibold" color="#d6d6d6">
           {title}
         </Text>
         {note ? (
@@ -218,7 +219,7 @@ export const register: Register = on => {
     )
 
     return (
-      <Box flexDirection="column" gap={2} paddingX={1} paddingY={1}>
+      <Box flexDirection="column" gap={2} paddingY={1}>
         {/* ---------------- Now */}
         <Box key="now" flexDirection="column" gap={1} padding={1} backgroundColor="#232427" borderStyle="round" borderColor={hero.isLive ? tint : '#34363a'}>
           <Box flexDirection="row" gap={1} alignItems="center">
@@ -252,15 +253,15 @@ export const register: Register = on => {
         </Box>
 
         {/* ---------------- Vitals */}
-        {l.vitals && Svg ? <Svg key="vitals" source={rings(l.vitals, WIDE)} width={WIDE} height={88} alt={vitalsAlt(l)} /> : null}
+        {l.vitals && Svg ? <Svg key="vitals" source={rings(l.vitals, WIDE)} width={WIDE} height={RINGS_H} alt={vitalsAlt(l)} /> : null}
 
         {/* ---------------- This chat */}
         {all.length ? (
           <Box key="chat" flexDirection="column" gap={1}>
             {section('This chat', `${all.length} request${all.length === 1 ? '' : 's'}`)}
             {Svg ? (
-              <Box paddingX={1}>
-                <Svg source={timeline(shown, WIDE - 22, tint)} width={WIDE - 22} alt={shown.map(s => s.text).join('\n')} isInteractive />
+              <Box>
+                <Svg source={timeline(shown, WIDE, tint)} width={WIDE} alt={shown.map(s => s.text).join('\n')} isInteractive />
               </Box>
             ) : (
               shown.map(s => (
@@ -270,12 +271,12 @@ export const register: Register = on => {
               ))
             )}
             {links.length ? (
-              <Box flexDirection="row" flexWrap="wrap" columnGap={2} paddingX={1}>
+              <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
                 {links.map(c => chipView($, c, v, { Box, Text, Button, Link }))}
               </Box>
             ) : null}
             {all.length > STORIES_SHOWN ? (
-              <Box paddingX={1}>
+              <Box>
                 <Button key="all-requests" plain onPress={() => flipAll($)}>
                   <Text size="footnote" dimColor>
                     {v.showAllRequests ? 'Show fewer' : `Show ${all.length - STORIES_SHOWN} earlier`}
@@ -401,7 +402,7 @@ function groupLines($: EngineInterface, g: Group, v: View, el: Els) {
   const isOpen = v.openRepos.includes(g.key)
   const count = g.files.length + g.byCommands.length
   return (
-    <Box key={`group:${g.key}`} flexDirection="column" gap={0} paddingX={1}>
+    <Box key={`group:${g.key}`} flexDirection="column" gap={0}>
       <Button key={`group-btn:${g.key}`} plain onPress={() => toggleRepo($, g.key)}>
         <Text color={QUIET}>{count ? (isOpen ? '▾ ' : '▸ ') : ''}</Text>
         <Text weight="semibold">{g.name}</Text>

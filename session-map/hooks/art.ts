@@ -154,6 +154,8 @@ function markBody(m: MarkKind, live: string): string {
 
 const FONT = `font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif"`
 
+export const RINGS_H = 106
+
 /** Context and the two plan windows as rings, each with what it means under it. */
 export function rings(v: Vitals, width: number): string {
   const ctxPct = v.compactAt ? Math.min(100, Math.round((v.tokens / v.compactAt) * 100)) : 0
@@ -163,20 +165,20 @@ export function rings(v: Vitals, width: number): string {
     if (l) items.push({ label: kind === 'five_hour' ? '5 hours' : 'Week', pct: Math.round(l.percentUsed), sub: resets(l) })
   }
   const col = width / items.length
-  const r = 21
+  const r = 27
   const C = 2 * Math.PI * r
   const parts = items.map((it, i) => {
     const cx = col * i + col / 2
     const c = tone(it.pct)
     const dash = (C * Math.min(100, it.pct)) / 100
-    return `<circle cx="${cx}" cy="28" r="${r}" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="6"/>
-      <circle cx="${cx}" cy="28" r="${r}" fill="none" stroke="${c}" stroke-width="6" stroke-linecap="round"
-        stroke-dasharray="${dash.toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 ${cx} 28)"/>
-      <text x="${cx}" y="32.5" text-anchor="middle" ${FONT} font-size="13" font-weight="650" fill="#ececec">${it.pct}%</text>
-      <text x="${cx}" y="68" text-anchor="middle" ${FONT} font-size="11.5" font-weight="600" fill="#d6d6d6">${esc(it.label)}</text>
-      <text x="${cx}" y="82" text-anchor="middle" ${FONT} font-size="10" fill="#8d939c">${esc(it.sub)}</text>`
+    return `<circle cx="${cx}" cy="34" r="${r}" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="7"/>
+      <circle cx="${cx}" cy="34" r="${r}" fill="none" stroke="${c}" stroke-width="7" stroke-linecap="round"
+        stroke-dasharray="${dash.toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 ${cx} 34)"/>
+      <text x="${cx}" y="39.5" text-anchor="middle" ${FONT} font-size="15.5" font-weight="650" fill="#ececec">${it.pct}%</text>
+      <text x="${cx}" y="84" text-anchor="middle" ${FONT} font-size="13" font-weight="600" fill="#d6d6d6">${esc(it.label)}</text>
+      <text x="${cx}" y="100" text-anchor="middle" ${FONT} font-size="11.5" fill="#8d939c">${esc(it.sub)}</text>`
   })
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="88" viewBox="0 0 ${width} 88">${parts.join('')}</svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${RINGS_H}" viewBox="0 0 ${width} ${RINGS_H}">${parts.join('')}</svg>`
 }
 
 export function tone(pct: number): string {
@@ -222,10 +224,10 @@ function icon(k: Kind | 'commit', x: number, y: number, c: string): string {
     default:
       body = `<circle cx="6" cy="6" r="2.5" fill="${c}"/>`
   }
-  return `<g transform="translate(${x.toFixed(1)} ${y.toFixed(1)})">${body}</g>`
+  return `<g transform="translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(1.2)">${body}</g>`
 }
 
-const ROW = 46
+const ROW = 56
 const ICON_ORDER: Kind[] = ['edit', 'run', 'read', 'web', 'agent', 'publish']
 
 /**
@@ -238,32 +240,32 @@ export function timeline(list: Story[], width: number, live: string): string {
   const rows = list.map((s, i) => {
     const y = i * ROW
     const node = s.isNow ? 'live' : s.end === 'aborted' || s.end === 'error' ? 'stopped' : s.ask ? 'ask' : s.ms !== null ? 'done' : 'quiet'
-    const rail = i < list.length - 1 ? `<rect x="8" y="${y + 20}" width="2" height="${ROW - 12}" rx="1" fill="#ffffff" fill-opacity="0.09"/>` : ''
-    const dot = `<g transform="translate(2 ${y + 4})">${markBody(node, live)}</g>`
+    const rail = i < list.length - 1 ? `<rect x="9" y="${y + 24}" width="2" height="${ROW - 14}" rx="1" fill="#ffffff" fill-opacity="0.09"/>` : ''
+    const dot = `<g transform="translate(1 ${y + 4}) scale(1.25)">${markBody(node, live)}</g>`
     const dur = s.ms !== null ? since(s.ms) : ''
-    const titleRoom = Math.floor((width - 30 - dur.length * 7 - 10) / 7)
-    const title = `<text x="28" y="${y + 15}" ${FONT} font-size="13" font-weight="${s.isNow ? 650 : 550}" fill="${s.isNow ? '#ffffff' : '#e3e3e3'}">${esc(clipTo(s.text, titleRoom))}</text>`
+    const titleRoom = Math.floor((width - 32 - dur.length * 8 - 12) / 7.9)
+    const title = `<text x="30" y="${y + 17}" ${FONT} font-size="15" font-weight="${s.isNow ? 650 : 550}" fill="${s.isNow ? '#ffffff' : '#e3e3e3'}">${esc(clipTo(s.text, titleRoom))}</text>`
     const durText = dur
-      ? `<text x="${width - 2}" y="${y + 15}" text-anchor="end" ${FONT} font-size="11.5" fill="${s.isNow ? live : '#8d939c'}">${esc(dur)}</text>`
+      ? `<text x="${width - 2}" y="${y + 17}" text-anchor="end" ${FONT} font-size="13" fill="${s.isNow ? live : '#8d939c'}">${esc(dur)}</text>`
       : ''
     // Second line: when, then an icon and a count for each kind of work, then commits.
     const parts: string[] = []
-    let x = 28
+    let x = 30
     const when = s.isNow ? 'now' : hhmm(s.at)
-    parts.push(`<text x="${x}" y="${y + 34}" ${FONT} font-size="11" fill="${s.isNow ? live : '#8d939c'}">${when}</text>`)
-    x += when.length * 6.4 + 10
+    parts.push(`<text x="${x}" y="${y + 39}" ${FONT} font-size="12.5" fill="${s.isNow ? live : '#8d939c'}">${when}</text>`)
+    x += when.length * 7.2 + 12
     for (const k of ICON_ORDER) {
       const n = s.counts[k]
       if (!n || x > width - 40) continue
-      parts.push(icon(k, x, y + 25, INK[k]))
-      parts.push(`<text x="${x + 15}" y="${y + 34}" ${FONT} font-size="11" fill="#c2c6cc">${n}</text>`)
-      x += 15 + String(n).length * 6.6 + 11
+      parts.push(icon(k, x, y + 28.5, INK[k]))
+      parts.push(`<text x="${x + 18}" y="${y + 39}" ${FONT} font-size="12.5" fill="#c2c6cc">${n}</text>`)
+      x += 18 + String(n).length * 7.4 + 13
     }
     if (s.commits && x < width - 60) {
       const c = s.unpushed ? WAIT : DONE
       const word = s.unpushed ? 'not pushed' : 'pushed'
-      parts.push(icon('commit', x, y + 25, c))
-      parts.push(`<text x="${x + 15}" y="${y + 34}" ${FONT} font-size="11" fill="${c}">${s.commits} ${word}</text>`)
+      parts.push(icon('commit', x, y + 28.5, c))
+      parts.push(`<text x="${x + 18}" y="${y + 39}" ${FONT} font-size="12.5" fill="${c}">${s.commits} ${word}</text>`)
     }
     const tip = [s.text, s.work ? `\n${s.work}` : '', s.recap ? `\n${s.recap}` : '', s.ask ? `\nAsked you: ${s.ask}` : ''].join('')
     return `<g><title>${esc(tip)}</title><rect x="0" y="${y}" width="${width}" height="${ROW - 4}" fill="#000" fill-opacity="0"/>${rail}${dot}${title}${durText}${parts.join('')}</g>`
