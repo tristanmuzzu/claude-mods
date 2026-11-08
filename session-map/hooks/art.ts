@@ -336,9 +336,11 @@ export function esc(s: string): string {
 /** A thin chevron with rounded ends, in the colour of the words beside it. */
 export function chevron(dir: 'down' | 'up', size = 14, color = '#c9ccd1'): string {
   const c = size / 2
+  // Sit on the middle of the lowercase letters beside it, not the middle of the line box.
+  const m = c + size * 0.11
   const a = size * 0.32
-  const y = dir === 'down' ? c - a * 0.5 : c + a * 0.5
-  const tip = dir === 'down' ? c + a * 0.5 : c - a * 0.5
+  const y = dir === 'down' ? m - a * 0.5 : m + a * 0.5
+  const tip = dir === 'down' ? m + a * 0.5 : m - a * 0.5
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">` +
     `<path d="M${c - a} ${y} L${c} ${tip} L${c + a} ${y}" fill="none" stroke="${color}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>` +
