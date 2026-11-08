@@ -483,7 +483,7 @@ function fileLine($: EngineInterface, r: FileRow, v: View, el: Els) {
             </Text>
           </Button>
           <Text size="caption" dimColor wrap="truncate-start">
-            {[r.dir || '/', word].filter(Boolean).join(' · ')}
+            {[r.dir || r.repo?.name, word].filter(Boolean).join(' · ')}
           </Text>
         </Box>
         {r.added || r.removed ? (
