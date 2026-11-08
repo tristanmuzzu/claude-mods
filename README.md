@@ -46,28 +46,27 @@ Fix login bug         <- idle
 
 ## session-map
 
-A side pane that tells you what is going on in one chat at a glance, so the
-built-in side panel can stay closed. Three parts, top to bottom:
+A side pane that shows what is going on in one chat at a glance, read by
+shape and colour rather than text. Top to bottom:
 
 - **Now**: an animated icon acts out what Claude is doing (an eye while it
   reads, a pencil while it edits, a terminal while a command runs, a globe for
   web and screen work, orbiting dots for helpers, bouncing dots while it
-  thinks), with the step in plain words and how long it has taken. Below it,
-  the chat's task list as a track: "Step 3 of 5 · Rebuild the pane", and the
-  last couple of steps fading out. When Claude is waiting on you it says so
-  ("Needs your answer", "Your call"); when a request finishes, its own recap
-  is the headline.
-- **This chat**: each request, newest first: what you asked, how long it took,
-  what it did in words ("4 edits · 6 commands · 12 lookups"), its recap, and
-  chips for what it left behind (commits and whether they are pushed, pull
-  requests, published pages, new scripts with a copy-run button).
-- **Changes**: one line per project with where it stands in git ("3 files not
-  committed", "2 commits, all pushed") and lines added and removed. Press it
-  for the files; press a file for its diff. Files changed by shell commands
-  are counted, not listed.
-
-Context and plan limits stay in plan-meter's line above the prompt; the pane
-only warns when context passes 75% or a plan limit passes 80%.
+  thinks), with the step in one line and how long it has taken. Under it, the
+  chat's task list as a track with the step in progress. When Claude waits on
+  you it says so ("Needs your answer", "Your call"); when a request finishes,
+  the first line of its own recap is the headline.
+- **Vitals**: rings for context before auto-compaction, the 5-hour limit and
+  the weekly limit, with reset times.
+- **This chat**: the requests as a timeline: a node per request (breathing
+  while it runs, a tick when done, amber when it left you a question), one
+  line of what you asked, how long Claude worked on it, and icons with counts
+  for edits, commands, lookups, web steps, helpers and commits (pushed or
+  not). Hover a request for the whole text and its recap. Background-task and
+  app messages fold into the request they belong to.
+- **Changes**: one line per project with where it stands in git ("3 files
+  not committed", "2 commits, all pushed"). Press it for the files; press a
+  file for its diff. Files changed by shell commands are counted, not listed.
 
 It reads the session's own tool calls (including the app's task list and
 wrap-up) and runs read-only git commands (`status`, `diff`, `log`). It makes

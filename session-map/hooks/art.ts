@@ -3,7 +3,8 @@
 // through all of them: INK by kind of work, WAIT for anything that needs
 // Tristan, DONE for finished, FAIL for stopped or failed.
 
-import type { Kind, PlanItem } from '../types'
+import type { Kind, Limit, PlanItem, Vitals } from '../types'
+import type { Story } from './model'
 
 export const INK: Record<Kind, string> = {
   read: '#a68cff',
@@ -127,6 +128,10 @@ export type MarkKind = 'live' | 'done' | 'ask' | 'stopped' | 'quiet'
 
 /** The 14px mark beside a request: a breathing ring while it runs, a tick, a question, a stop. */
 export function mark(m: MarkKind, live = THINK): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14">${markBody(m, live)}</svg>`
+}
+
+function markBody(m: MarkKind, live: string): string {
   let body = ''
   switch (m) {
     case 'live':
@@ -144,7 +149,151 @@ export function mark(m: MarkKind, live = THINK): string {
     default:
       body = `<circle cx="7" cy="7" r="3" fill="${QUIET}"/>`
   }
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14">${body}</svg>`
+  return body
+}
+
+const FONT = `font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif"`
+
+/** Context and the two plan windows as rings, each with what it means under it. */
+export function rings(v: Vitals, width: number): string {
+  const ctxPct = v.compactAt ? Math.min(100, Math.round((v.tokens / v.compactAt) * 100)) : 0
+  const items: { label: string; pct: number; sub: string }[] = [{ label: 'Context', pct: ctxPct, sub: `${short(v.tokens)} of ${short(v.compactAt)}` }]
+  for (const kind of ['five_hour', 'seven_day']) {
+    const l = v.limits.find(x => x.kind === kind)
+    if (l) items.push({ label: kind === 'five_hour' ? '5 hours' : 'Week', pct: Math.round(l.percentUsed), sub: resets(l) })
+  }
+  const col = width / items.length
+  const r = 21
+  const C = 2 * Math.PI * r
+  const parts = items.map((it, i) => {
+    const cx = col * i + col / 2
+    const c = tone(it.pct)
+    const dash = (C * Math.min(100, it.pct)) / 100
+    return `<circle cx="${cx}" cy="28" r="${r}" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="6"/>
+      <circle cx="${cx}" cy="28" r="${r}" fill="none" stroke="${c}" stroke-width="6" stroke-linecap="round"
+        stroke-dasharray="${dash.toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 ${cx} 28)"/>
+      <text x="${cx}" y="32.5" text-anchor="middle" ${FONT} font-size="13" font-weight="650" fill="#ececec">${it.pct}%</text>
+      <text x="${cx}" y="68" text-anchor="middle" ${FONT} font-size="11.5" font-weight="600" fill="#d6d6d6">${esc(it.label)}</text>
+      <text x="${cx}" y="82" text-anchor="middle" ${FONT} font-size="10" fill="#8d939c">${esc(it.sub)}</text>`
+  })
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="88" viewBox="0 0 ${width} 88">${parts.join('')}</svg>`
+}
+
+export function tone(pct: number): string {
+  if (pct >= 90) return FAIL
+  if (pct >= 75) return WAIT
+  return '#5aa9ff'
+}
+
+function resets(l: Limit): string {
+  if (!l.resetsAt) return ''
+  const d = new Date(l.resetsAt)
+  if (Number.isNaN(d.getTime())) return ''
+  const hm = hhmm(d.getTime())
+  return l.kind === 'five_hour' ? `resets ${hm}` : `resets ${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]} ${hm}`
+}
+
+/** 12px icons, one per kind of work, in the kind's colour: the same language as the big glyph. */
+function icon(k: Kind | 'commit', x: number, y: number, c: string): string {
+  const st = `fill="none" stroke="${c}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"`
+  let body = ''
+  switch (k) {
+    case 'read':
+      body = `<path d="M1 6 Q6 1 11 6 Q6 11 1 6 Z" ${st}/><circle cx="6" cy="6" r="1.8" fill="${c}"/>`
+      break
+    case 'edit':
+      body = `<path d="M2 10 L2.6 7.4 L8 2 L10 4 L4.6 9.4 Z" ${st}/>`
+      break
+    case 'run':
+      body = `<rect x="0.8" y="1.6" width="10.4" height="8.8" rx="2" ${st}/><path d="M3.3 4.8 L5.3 6.3 L3.3 7.8" ${st}/>`
+      break
+    case 'web':
+      body = `<circle cx="6" cy="6" r="5" ${st}/><ellipse cx="6" cy="6" rx="2.2" ry="5" ${st}/>`
+      break
+    case 'agent':
+      body = `<circle cx="4" cy="6" r="2.4" ${st}/><circle cx="8.5" cy="6" r="2.4" ${st}/>`
+      break
+    case 'publish':
+      body = `<path d="M6 10 V2.5 M3 5.2 L6 2.2 L9 5.2" ${st}/>`
+      break
+    case 'commit':
+      body = `<path d="M0.5 6 H3.4 M8.6 6 H11.5" ${st}/><circle cx="6" cy="6" r="2.6" ${st}/>`
+      break
+    default:
+      body = `<circle cx="6" cy="6" r="2.5" fill="${c}"/>`
+  }
+  return `<g transform="translate(${x.toFixed(1)} ${y.toFixed(1)})">${body}</g>`
+}
+
+const ROW = 46
+const ICON_ORDER: Kind[] = ['edit', 'run', 'read', 'web', 'agent', 'publish']
+
+/**
+ * The chat's requests as a rail: a node per request (breathing while it
+ * runs, a tick when done, amber when it left you a question, red when it
+ * stopped), one line of what you asked, how long Claude worked, and icons
+ * with counts for what it did. Hover a request for the whole text and recap.
+ */
+export function timeline(list: Story[], width: number, live: string): string {
+  const rows = list.map((s, i) => {
+    const y = i * ROW
+    const node = s.isNow ? 'live' : s.end === 'aborted' || s.end === 'error' ? 'stopped' : s.ask ? 'ask' : s.ms !== null ? 'done' : 'quiet'
+    const rail = i < list.length - 1 ? `<rect x="8" y="${y + 20}" width="2" height="${ROW - 12}" rx="1" fill="#ffffff" fill-opacity="0.09"/>` : ''
+    const dot = `<g transform="translate(2 ${y + 4})">${markBody(node, live)}</g>`
+    const dur = s.ms !== null ? since(s.ms) : ''
+    const titleRoom = Math.floor((width - 30 - dur.length * 7 - 10) / 7)
+    const title = `<text x="28" y="${y + 15}" ${FONT} font-size="13" font-weight="${s.isNow ? 650 : 550}" fill="${s.isNow ? '#ffffff' : '#e3e3e3'}">${esc(clipTo(s.text, titleRoom))}</text>`
+    const durText = dur
+      ? `<text x="${width - 2}" y="${y + 15}" text-anchor="end" ${FONT} font-size="11.5" fill="${s.isNow ? live : '#8d939c'}">${esc(dur)}</text>`
+      : ''
+    // Second line: when, then an icon and a count for each kind of work, then commits.
+    const parts: string[] = []
+    let x = 28
+    const when = s.isNow ? 'now' : hhmm(s.at)
+    parts.push(`<text x="${x}" y="${y + 34}" ${FONT} font-size="11" fill="${s.isNow ? live : '#8d939c'}">${when}</text>`)
+    x += when.length * 6.4 + 10
+    for (const k of ICON_ORDER) {
+      const n = s.counts[k]
+      if (!n || x > width - 40) continue
+      parts.push(icon(k, x, y + 25, INK[k]))
+      parts.push(`<text x="${x + 15}" y="${y + 34}" ${FONT} font-size="11" fill="#c2c6cc">${n}</text>`)
+      x += 15 + String(n).length * 6.6 + 11
+    }
+    if (s.commits && x < width - 60) {
+      const c = s.unpushed ? WAIT : DONE
+      const word = s.unpushed ? 'not pushed' : 'pushed'
+      parts.push(icon('commit', x, y + 25, c))
+      parts.push(`<text x="${x + 15}" y="${y + 34}" ${FONT} font-size="11" fill="${c}">${s.commits} ${word}</text>`)
+    }
+    const tip = [s.text, s.work ? `\n${s.work}` : '', s.recap ? `\n${s.recap}` : '', s.ask ? `\nAsked you: ${s.ask}` : ''].join('')
+    return `<g><title>${esc(tip)}</title><rect x="0" y="${y}" width="${width}" height="${ROW - 4}" fill="#000" fill-opacity="0"/>${rail}${dot}${title}${durText}${parts.join('')}</g>`
+  })
+  const h = Math.max(ROW, list.length * ROW - 4)
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}" viewBox="0 0 ${width} ${h}">${rows.join('')}</svg>`
+}
+
+function clipTo(s: string, n: number): string {
+  const one = s.replace(/\s+/g, ' ').trim()
+  return one.length > n ? `${one.slice(0, Math.max(1, n - 1))}…` : one
+}
+
+function hhmm(t: number): string {
+  const d = new Date(t)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+function since(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m`
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
+}
+
+function short(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1000) return `${Math.round(n / 1000)}k`
+  return String(n)
 }
 
 /** A small dot that breathes, for a row Claude is on right now. */

@@ -1,7 +1,7 @@
 // Pure functions: reading tool calls into the ledger, and the view model the
 // pane draws from. Nothing here touches `$`, so all of it is testable alone.
 
-import type { Kind, Ledger, Live, PlanItem, Repo, Result, Step, Touch, TurnEnd } from '../types'
+import type { Kind, Ledger, Live, PlanItem, Repo, Result, Step, Touch, Turn, TurnEnd } from '../types'
 
 export const EMPTY: Ledger = {
   steps: [],
@@ -391,6 +391,11 @@ export type Story = {
   ask: string
   /** The request's work in plain words: "4 edits · 6 commands". */
   work: string
+  /** Steps by kind, for the timeline's icons. */
+  counts: Partial<Record<Kind, number>>
+  /** Commits made during the request, and how many of them are not pushed. */
+  commits: number
+  unpushed: number
   chips: Chip[]
   /** The newest steps of this request, newest last. */
   recent: Step[]
@@ -412,20 +417,50 @@ export function workWords(steps: Step[]): string {
     .join(' · ')
 }
 
-/** Each request, newest first, told as what was asked, what it did and what it left behind. */
+/**
+ * True for a prompt the app or a tool sent rather than Tristan: a background
+ * task's notice, a CI event, an app command. Its work belongs to the request
+ * before it.
+ */
+export function isAutomated(text: string): boolean {
+  const m = /^<([a-z][\w-]*)[\s>]/.exec(promptText(text))
+  return Boolean(m && m[1] !== 'pasted_content')
+}
+
+/**
+ * Each request, newest first: what was asked, how long Claude worked on it,
+ * what it did and what it left behind. Automated prompts fold into the
+ * request before them, and the time counts only while Claude was working.
+ */
 export function stories(l: Ledger, now: number): Story[] {
-  return l.turns
-    .map((t, i) => {
-      const isNow = i === l.turns.length - 1 && l.isWorking
-      const steps = l.steps.filter(s => s.turn === t.n && s.agent === null)
-      const from = t.at
-      const to = (t.endedAt ?? now) + 60_000
+  const groups: Turn[][] = []
+  for (const t of l.turns) {
+    const last = groups[groups.length - 1]
+    if ((t.auto ?? isAutomated(t.text)) && last) last.push(t)
+    else groups.push([t])
+  }
+  return groups
+    .map((g, gi) => {
+      const head = g[0] as Turn
+      const tail = g[g.length - 1] as Turn
+      const isNow = gi === groups.length - 1 && l.isWorking
+      const ns = new Set(g.map(t => t.n))
+      const steps = l.steps.filter(s => ns.has(s.turn) && s.agent === null)
+      const from = head.at
+      const to = (tail.endedAt ?? now) + 60_000
       const inWindow = (at: number) => at >= from && at <= to
+      let ms = 0
+      for (const t of g) ms += t.workMs ?? (t.endedAt ? t.endedAt - t.at : 0)
+      if (isNow) ms += now - (l.startedAt ?? tail.at)
       const chips: Chip[] = []
+      let commits = 0
+      let unpushed = 0
       for (const r of l.repos) {
         const made = r.commits.filter(c => inWindow(c.at * 1000))
         if (!made.length) continue
         const isPushed = r.hasUpstream && r.ahead === 0
+        commits += made.length
+        if (!isPushed) unpushed += made.length
         chips.push({
           label: `${made.length} commit${made.length === 1 ? '' : 's'} in ${r.name}${isPushed ? ', pushed' : ''}`,
           href: null,
@@ -435,16 +470,22 @@ export function stories(l: Ledger, now: number): Story[] {
       for (const r of l.results.filter(x => inWindow(x.at)).slice(-4)) {
         chips.push({ label: `${RESULT_WORD[r.kind] ?? ''}${r.title}`, href: r.href, tone: 'plain', run: r.run })
       }
+      const counts: Partial<Record<Kind, number>> = {}
+      for (const s of steps) counts[s.kind] = (counts[s.kind] ?? 0) + 1
+      const recap = [...g].reverse().find(t => t.recap)?.recap ?? ''
       return {
-        n: t.n,
-        text: promptText(t.text) || 'A request made before the map could read it',
-        at: t.at,
-        ms: t.endedAt ? t.endedAt - t.at : isNow ? now - t.at : null,
+        n: head.n,
+        text: promptText(head.text) || 'Your first message',
+        at: head.at,
+        ms: ms > 0 || isNow ? ms : null,
         isNow,
-        end: t.end ?? null,
-        recap: t.recap ?? '',
-        ask: t.ask ?? '',
+        end: tail.end ?? null,
+        recap,
+        ask: tail.ask ?? '',
         work: workWords(steps),
+        counts,
+        commits,
+        unpushed,
         chips,
         recent: steps.slice(-4),
       }

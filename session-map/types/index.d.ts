@@ -18,6 +18,10 @@ export type Turn = {
   /** The question the turn left for Tristan, when it left one. */
   ask?: string
   end?: TurnEnd
+  /** Sent by the app or a tool, not typed: its work belongs to the request before it. */
+  auto?: boolean
+  /** How long Claude worked on this turn, in milliseconds. */
+  workMs?: number
 }
 
 /** A file Claude read or wrote through its own tools. */
@@ -95,6 +99,8 @@ export type Ledger = {
   asking?: string | null
   /** The main loop's turn in progress, so a nested turn's end does not end it. */
   mainTurn?: string | null
+  /** When the main turn in progress started. */
+  startedAt?: number | null
 }
 
 export type View = {

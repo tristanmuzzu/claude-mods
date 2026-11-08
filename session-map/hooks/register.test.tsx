@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { glyph, mark, track } from './art'
+import { glyph, mark, rings, timeline, track } from './art'
 import { cutDiff, parseLog, parseStatus } from './git'
 import { applyPlan, changeGroups, EMPTY, fileRows, place, promptText, stories } from './model'
 
@@ -31,8 +31,8 @@ function engine(on: any) {
   on('session.start', (_: unknown, e: any) => ({ cwd: e.cwd }))
   on('turn.start', (_: unknown, e: any) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
-  on('clock.every', () => ({ value: { cancel: () => undefined } }))
-  on('clock.after', () => ({ value: { cancel: () => undefined } }))
+  on('clock.every', () => ({ value: {} }))
+  on('clock.after', () => ({ value: {} }))
   on('tool.call', (_: unknown, e: any) => {
     if (e.tool === 'Write') return { result: {}, text: `File created successfully at: ${e.file_path}` }
     return { result: {}, text: 'ok' }
@@ -54,8 +54,13 @@ test('the pane tells the request as a story and rolls changes up by project', as
     const ui = await $.ui.mount({ ...PANE, surface })
     const all = await texts(ui)
     expect(all.some(t => t === 'This chat')).toBe(true)
-    expect(all.some(t => /Make the sidebar better/.test(t))).toBe(true)
-    expect(all.some(t => /2 edits · 1 lookup/.test(t))).toBe(true)
+    if (surface === 'terminal') {
+      expect(all.some(t => /Make the sidebar better/.test(t))).toBe(true)
+    } else {
+      // Desktop draws the requests as a timeline; its alt text names them.
+      const svgs = (await ui.findAll({ type: 'Svg' })) as any[]
+      expect(svgs.some(x => /Make the sidebar better/.test(String(x.props?.alt ?? '')))).toBe(true)
+    }
     // The pane no longer lists every file up front: one line per project.
     expect(await ui.find({ type: 'Button', key: `open:${PROJECT}/a.ts` })).toBeFalsy()
     expect((await ui.find({ type: 'Button', key: 'group-btn:claude-mods' }))?.text).toContain('claude-mods')
@@ -88,7 +93,7 @@ test('the task list shows as a track with the step in progress', async ($, on) =
   await $.tool.call({ tool: PLAN, advance: true } as any)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const all = await texts(ui)
-  expect(all.some(t => /Step 2 of 3/.test(t) && /Rebuild the pane/.test(t))).toBe(true)
+  expect(all.some(t => /^2 of 3 · Rebuild the pane$/.test(t))).toBe(true)
   // Nothing runs: the headline names the step being worked on.
   expect(all.some(t => /^Thinking/.test(t))).toBe(true)
   await ui.unmount()
@@ -220,6 +225,7 @@ test('drawings are well-formed SVG', () => {
     expect(glyph(m, true)).toMatch(/^<svg[\s\S]*<\/svg>$/)
   }
   for (const m of ['live', 'done', 'ask', 'stopped', 'quiet'] as const) expect(mark(m)).toMatch(/^<svg[\s\S]*<\/svg>$/)
+  expect(rings({ tokens: 134_000, compactAt: 400_000, isCompactPoint: true, limits: [{ kind: 'five_hour', percentUsed: 23, resetsAt: null }] }, 300)).toContain('34%')
   const t = track([{ text: 'a', status: 'completed' }, { text: 'b', status: 'in_progress' }, { text: 'c', status: 'pending' }], 300, '#fff')
   expect((t.match(/<rect/g) ?? []).length).toBe(3)
 })
@@ -234,4 +240,45 @@ test('a request is shown as typed, without the context the app wraps around it',
   // An earlier clip cut the reminder off before its closing tag.
   expect(promptText('<system-reminder> The user started this session without a folder')).toBe('')
   expect(promptText('<pasted_content id="x">log line</pasted_content> fix this')).toBe('log line fix this')
+})
+
+test('automated prompts fold into the request before them', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'Fix the proxy' } as any)
+  await ($ as any).turn.start({ text: 'Fix the proxy', turnId: 'main-1' })
+  await $.tool.call({ tool: 'Bash', command: 'make', description: 'Build it' })
+  await ($ as any).turn.complete({ answer: '', durationMs: 1000, isAborted: false, turnId: 'main-1', reason: 'answer' })
+  await $.prompt.submit({ text: '<task-notification><task-id>b1</task-id><status>completed</status></task-notification>' } as any)
+  await ($ as any).turn.start({ text: '', turnId: 'main-2' })
+  await $.tool.call({ tool: 'Bash', command: 'make test', description: 'Test it' })
+  await ($ as any).turn.complete({ answer: '', durationMs: 1000, isAborted: false, turnId: 'main-2', reason: 'answer' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const all = await texts(ui)
+  expect(all.some(t => t === '1 request')).toBe(true)
+  expect(all.some(t => /task-notification/.test(t))).toBe(false)
+  await ui.unmount()
+})
+
+test('the timeline draws a row per request with icons and counts', () => {
+  const at = 1_700_000_000_000
+  const svg = timeline(
+    stories(
+      {
+        ...EMPTY,
+        turns: [{ n: 1, text: 'Fix <it>', at, endedAt: at + 90_000, workMs: 90_000 }],
+        steps: [
+          { kind: 'edit', at, ms: 10, turn: 1, label: 'Editing a.ts', agent: null },
+          { kind: 'run', at, ms: 10, turn: 1, label: 'Ran tests', agent: null },
+          { kind: 'run', at, ms: 10, turn: 1, label: 'Ran build', agent: null },
+        ],
+      },
+      at + 100_000,
+    ),
+    360,
+    '#fff',
+  )
+  expect(svg).toContain('Fix &lt;it&gt;')
+  expect(svg).toContain('>1m<')
+  expect(svg).toContain('>2<')
 })

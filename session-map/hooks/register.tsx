@@ -2,8 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { Kind, Ledger, PlanItem, Probe, Repo, TurnEnd, View } from '../types'
-import { DONE, FAIL, glyph, INK, liveDot, mark, moodColor, QUIET, track, WAIT } from './art'
-import type { MarkKind, Mood } from './art'
+import { DONE, glyph, INK, liveDot, moodColor, QUIET, rings, timeline, track, WAIT } from './art'
+import type { Mood } from './art'
 import { diffOf, gitTrouble, rootOf, scan } from './git'
 import {
   applyPlan,
@@ -14,6 +14,7 @@ import {
   classify,
   describe,
   EMPTY,
+  isAutomated,
   pathOf,
   planPlace,
   promptText,
@@ -181,12 +182,15 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
     const { Box, Text, Button, Link, Code } = els
-    const Svg = 'Svg' in els ? els.Svg : null
+    // The terminal draws no Svg: it gets plain text in its place.
+    const Svg = e.surface !== 'terminal' && 'Svg' in els ? els.Svg : null
     const l = await read($, ledger)
     const v = await read($, view)
     const now = Date.now()
-    // Desktop columns are about 11px; the card takes its padding and border out of that.
-    const W = Math.max(200, Math.round((e.props.bodyColumns ?? 33) * 11 - 72))
+    // Desktop columns are about 11px; cards take their padding and border out of that.
+    const cols = e.props.bodyColumns ?? 33
+    const W = Math.max(200, Math.round(cols * 11 - 72))
+    const WIDE = Math.max(220, Math.round(cols * 11 - 46))
     void note($, { surface: e.surface, bodyColumns: e.props.bodyColumns, placement: e.props.placement, at: now })
 
     const all = stories(l, now)
@@ -194,17 +198,11 @@ export const register: Register = on => {
     const hero = heroOf(l, all[0] ?? null, now)
     const tint = moodColor(hero.mood)
     const plan = l.plan ?? []
-    const lastN = l.turns[l.turns.length - 1]?.n ?? 0
-    const showPlan = plan.length > 0 && l.planTurn === lastN
+    const showPlan = plan.length > 0 && l.planTurn === headTurn(l)
     const place = planPlace(plan)
-    const live = [...l.live].reverse()
-    const mainLive = live.find(x => x.agent === null && x.kind !== 'agent') ?? null
-    const helpers = live.filter(x => x.agent !== null || x.kind === 'agent')
-    const current = all[0]?.isNow ? all[0] : null
-    const trail = current ? current.recent.slice(mainLive ? -2 : -3).reverse() : []
-    const main = pickMain(l)
-    const alerts = alertsOf(l)
-    const shownStories = v.showAllRequests ? all : all.slice(0, STORIES_SHOWN)
+    const helpers = l.live.filter(x => x.agent !== null || x.kind === 'agent')
+    const shown = v.showAllRequests ? all : all.slice(0, STORIES_SHOWN)
+    const links = all.flatMap(s => s.chips.filter(c => c.href || c.run)).slice(0, 4)
 
     const section = (title: string, note: string) => (
       <Box flexDirection="row" gap={1} paddingX={1} alignItems="center">
@@ -234,67 +232,48 @@ export const register: Register = on => {
               </Text>
             </Box>
           </Box>
-          {hero.detail ? (
-            <Text size="footnote" color="#b4b8be" wrap="wrap">
-              {hero.detail}
-            </Text>
-          ) : null}
-
           {showPlan ? (
             <Box flexDirection="column" gap={0}>
+              {Svg ? <Svg source={track(plan, W, hero.isLive ? tint : DONE)} width={W} height={8} alt={planAlt(plan)} isInteractive /> : null}
               <Text size="caption" dimColor wrap="truncate-end">
-                {place.current
-                  ? `Step ${place.index + 1} of ${place.total} · `
-                  : place.done === place.total
-                    ? `All ${place.total} steps done`
-                    : `${place.done} of ${place.total} steps done`}
+                {place.current ? `${place.index + 1} of ${place.total} · ` : `${place.done} of ${place.total} done`}
                 {place.current ? <Text color="#e6e6e6">{place.current.text}</Text> : null}
               </Text>
-              {Svg ? <Svg source={track(plan, W, hero.isLive ? tint : WAIT)} width={W} height={8} alt={planAlt(plan)} isInteractive /> : null}
             </Box>
           ) : null}
-
-          {trail.length || helpers.length ? (
-            <Box flexDirection="column" gap={0}>
-              {helpers.slice(0, 3).map(h => (
-                <Box key={`helper:${h.id}`} flexDirection="row" gap={1} alignItems="center">
-                  {Svg ? <Svg source={liveDot(INK.agent)} width={10} height={10} alt="helper working" /> : null}
-                  <Text size="footnote" wrap="truncate-end">
-                    {h.label.replace(/^Helper: /, '')}
-                    <Text dimColor>{` · helper · ${since(now - h.at)}`}</Text>
-                  </Text>
-                </Box>
-              ))}
-              {trail.map((s, i) => (
-                <Text key={`trail:${s.at}:${i}`} size="footnote" dimColor wrap="truncate-end">
-                  <Text color={INK[s.kind]}>{'● '}</Text>
-                  {s.label}
-                </Text>
-              ))}
+          {helpers.length ? (
+            <Box flexDirection="row" gap={1} alignItems="center">
+              {Svg ? <Svg source={liveDot(INK.agent)} width={10} height={10} alt="helpers working" /> : null}
+              <Text size="footnote" color={INK.agent}>
+                {`${helpers.length} helper${helpers.length === 1 ? '' : 's'} working`}
+              </Text>
             </Box>
-          ) : null}
-
-          {main ? (
-            <Text size="caption" dimColor wrap="truncate-end">
-              {`${main.name} · ${main.branch}${main.ahead ? ` ↑${main.ahead}` : ''}${main.behind ? ` ↓${main.behind}` : ''}`}
-            </Text>
           ) : null}
         </Box>
 
-        {alerts.map(a => (
-          <Box key={`alert:${a.text}`} flexDirection="row" gap={1} paddingX={1}>
-            <Text size="footnote" color={a.color}>
-              {'▲ '}
-              {a.text}
-            </Text>
-          </Box>
-        ))}
+        {/* ---------------- Vitals */}
+        {l.vitals && Svg ? <Svg key="vitals" source={rings(l.vitals, WIDE)} width={WIDE} height={88} alt={vitalsAlt(l)} /> : null}
 
         {/* ---------------- This chat */}
         {all.length ? (
           <Box key="chat" flexDirection="column" gap={1}>
             {section('This chat', `${all.length} request${all.length === 1 ? '' : 's'}`)}
-            {shownStories.map((s, i) => storyLine($, s, i === 0 && !s.isNow && hero.usesRecap, v, { Box, Text, Button, Link, Svg }, now))}
+            {Svg ? (
+              <Box paddingX={1}>
+                <Svg source={timeline(shown, WIDE - 22, tint)} width={WIDE - 22} alt={shown.map(s => s.text).join('\n')} isInteractive />
+              </Box>
+            ) : (
+              shown.map(s => (
+                <Text key={`story:${s.n}`} wrap="truncate-end">
+                  {`${s.isNow ? 'now' : clock(s.at)} · ${s.text}`}
+                </Text>
+              ))
+            )}
+            {links.length ? (
+              <Box flexDirection="row" flexWrap="wrap" columnGap={2} paddingX={1}>
+                {links.map(c => chipView($, c, v, { Box, Text, Button, Link }))}
+              </Box>
+            ) : null}
             {all.length > STORIES_SHOWN ? (
               <Box paddingX={1}>
                 <Button key="all-requests" plain onPress={() => flipAll($)}>
@@ -321,83 +300,44 @@ export const register: Register = on => {
 
 // ---------------------------------------------------------------- the Now card
 
-type Hero = { mood: Mood; eyebrow: string; headline: string; detail: string; isLive: boolean; usesRecap: boolean }
+type Hero = { mood: Mood; eyebrow: string; headline: string; isLive: boolean }
 
 function heroOf(l: Ledger, last: Story | null, now: number): Hero {
   const live = [...l.live].reverse()
   const mainLive = live.find(x => x.agent === null && x.kind !== 'agent') ?? null
   const helpers = live.filter(x => x.agent !== null || x.kind === 'agent')
   const plan = planPlace(l.plan ?? [])
-  if (l.asking) {
-    return { mood: 'waiting', eyebrow: 'Needs your answer', headline: l.asking, detail: 'Answer in the chat to let Claude carry on.', isLive: true, usesRecap: false }
-  }
+  if (l.asking) return { mood: 'waiting', eyebrow: 'Needs your answer', headline: clip(l.asking, 110), isLive: true }
   if (l.isWorking && mainLive) {
-    return {
-      mood: mainLive.kind,
-      eyebrow: `${DOING[mainLive.kind]} · ${since(now - mainLive.at)}`,
-      headline: mainLive.label,
-      detail: last ? `You asked: ${clip(last.text, 120)}` : '',
-      isLive: true,
-      usesRecap: false,
-    }
+    return { mood: mainLive.kind, eyebrow: `${DOING[mainLive.kind]} · ${since(now - mainLive.at)}`, headline: clip(mainLive.label, 110), isLive: true }
   }
   if (l.isWorking && helpers.length) {
     return {
       mood: 'agent',
       eyebrow: `Helpers at work · ${helpers.length}`,
-      headline: helpers.length === 1 ? (helpers[0]?.label.replace(/^Helper: /, '') ?? '') : `${helpers.length} helpers working in parallel`,
-      detail: last ? `You asked: ${clip(last.text, 120)}` : '',
+      headline: helpers.length === 1 ? clip(helpers[0]?.label.replace(/^Helper: /, '') ?? '', 110) : `${helpers.length} helpers working in parallel`,
       isLive: true,
-      usesRecap: false,
     }
   }
   if (l.isWorking) {
-    return {
-      mood: 'thinking',
-      eyebrow: `Thinking · ${last?.ms != null ? since(last.ms) : ''}`,
-      headline: plan.current ? plan.current.text : 'Working out the next step',
-      detail: last ? `You asked: ${clip(last.text, 120)}` : '',
-      isLive: true,
-      usesRecap: false,
-    }
+    return { mood: 'thinking', eyebrow: `Thinking · ${since(now - (l.startedAt ?? now))}`, headline: plan.current ? plan.current.text : 'Working out the next step', isLive: true }
   }
-  if (!last) {
-    return { mood: 'ready', eyebrow: 'Ready', headline: 'Waiting for your first request', detail: '', isLive: false, usesRecap: false }
-  }
-  const took = last.ms != null ? `took ${since(last.ms)}` : ''
-  if (last.end === 'aborted') {
-    return { mood: 'stopped', eyebrow: 'Stopped', headline: 'You stopped the last request', detail: [last.work, took].filter(Boolean).join(' · '), isLive: false, usesRecap: false }
-  }
+  if (!last) return { mood: 'ready', eyebrow: 'Ready', headline: 'Waiting for your first request', isLive: false }
+  const took = last.ms != null ? ` · ${since(last.ms)}` : ''
+  if (last.end === 'aborted') return { mood: 'stopped', eyebrow: `Stopped${took}`, headline: 'You stopped the last request', isLive: false }
   if (last.end === 'error' || last.end === 'refusal') {
-    return {
-      mood: 'stopped',
-      eyebrow: 'Ended early',
-      headline: last.end === 'error' ? 'The last request ended on an error' : 'The model declined the last request',
-      detail: took,
-      isLive: false,
-      usesRecap: false,
-    }
+    return { mood: 'stopped', eyebrow: `Ended early${took}`, headline: last.end === 'error' ? 'The last request hit an error' : 'The model declined the last request', isLive: false }
   }
-  const [first, rest] = splitRecap(last.recap)
-  if (last.ask) {
-    return { mood: 'waiting', eyebrow: 'Your call', headline: last.ask, detail: last.recap ? clip(last.recap, 220) : '', isLive: false, usesRecap: true }
-  }
-  return {
-    mood: 'done',
-    eyebrow: `Done · ${[took, last.ms != null ? `at ${clock(last.at + last.ms)}` : ''].filter(Boolean).join(' ')}`,
-    headline: first || doneLine(last),
-    detail: first ? rest : '',
-    isLive: false,
-    usesRecap: Boolean(first),
-  }
+  if (last.ask) return { mood: 'waiting', eyebrow: 'Your call', headline: clip(last.ask, 110), isLive: false }
+  return { mood: 'done', eyebrow: `Done${took}`, headline: firstSentence(last.recap) || doneLine(last), isLive: false }
 }
 
-/** The recap's first sentence for the headline, the rest under it. */
-function splitRecap(recap: string): [string, string] {
+/** The recap's first sentence, short enough for a headline. */
+function firstSentence(recap: string): string {
   const t = recap.replace(/\s+/g, ' ').trim()
-  if (!t) return ['', '']
-  const m = /^(.{12,160}?[.!?])\s+(.*)$/.exec(t)
-  return m ? [m[1] ?? t, clip(m[2] ?? '', 220)] : [clip(t, 160), '']
+  if (!t) return ''
+  const m = /^(.{12,}?[.!?])(\s|$)/.exec(t)
+  return clip(m?.[1] ?? t, 110)
 }
 
 function doneLine(s: Story): string {
@@ -406,72 +346,31 @@ function doneLine(s: Story): string {
   return s.work ? s.work.charAt(0).toUpperCase() + s.work.slice(1) : 'Answered'
 }
 
-function alertsOf(l: Ledger): { text: string; color: string }[] {
-  const out: { text: string; color: string }[] = []
+function vitalsAlt(l: Ledger): string {
   const v = l.vitals
-  if (!v) return out
-  const ctx = v.compactAt ? Math.round((v.tokens / v.compactAt) * 100) : 0
-  if (ctx >= 75) out.push({ text: `Context ${ctx}% full: ${short(v.compactAt - v.tokens)} left before it compacts`, color: ctx >= 90 ? FAIL : WAIT })
-  for (const x of v.limits) {
-    if (x.percentUsed < 80) continue
-    const name = x.kind === 'five_hour' ? '5-hour limit' : x.kind === 'seven_day' ? 'Weekly limit' : 'Plan limit'
-    out.push({ text: `${name} ${Math.round(x.percentUsed)}% used${x.resetsAt ? `, resets ${resetWhen(x.resetsAt, x.kind)}` : ''}`, color: x.percentUsed >= 95 ? FAIL : WAIT })
-  }
-  return out
-}
-
-function resetWhen(at: string, kind: string): string {
-  const d = new Date(at)
-  if (Number.isNaN(d.getTime())) return ''
-  const hm = clock(d.getTime())
-  return kind === 'five_hour' ? hm : `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]} ${hm}`
+  if (!v) return ''
+  return `Context ${short(v.tokens)} of ${short(v.compactAt)}; ${v.limits.map(x => `${x.kind} ${x.percentUsed}%`).join(', ')}`
 }
 
 function planAlt(plan: PlanItem[]): string {
   return plan.map((p, i) => `${i + 1}. ${p.text} (${p.status.replace('_', ' ')})`).join('\n')
 }
 
-// ---------------------------------------------------------------- This chat
+/** The number of the request a turn's work belongs to: the last one Tristan typed. */
+function headTurn(l: Ledger): number {
+  for (let i = l.turns.length - 1; i >= 0; i--) {
+    const t = l.turns[i]
+    if (t && !(t.auto ?? isAutomated(t.text))) return t.n
+  }
+  return l.turns[l.turns.length - 1]?.n ?? 0
+}
+
+// ---------------------------------------------------------------- links
 
 type Els = { Box: any; Text: any; Button: any; Link?: any; Code?: any; Svg?: any }
 
-function storyLine($: EngineInterface, s: Story, isInHero: boolean, v: View, el: Els, now: number) {
-  const { Box, Text, Button, Link, Svg } = el
-  const m: MarkKind = s.isNow ? 'live' : s.end === 'aborted' || s.end === 'error' ? 'stopped' : s.ask ? 'ask' : s.ms !== null ? 'done' : 'quiet'
-  const meta = [s.isNow ? 'now' : clock(s.at), s.ms !== null ? since(s.ms) : '', s.work].filter(Boolean).join(' · ')
-  return (
-    <Box key={`story:${s.n}`} flexDirection="row" gap={1} paddingX={1} minWidth={0}>
-      <Box paddingTop={0}>{Svg ? <Svg source={mark(m, '#e07a52')} width={14} height={14} alt={m} isInteractive={s.isNow} /> : null}</Box>
-      <Box flexDirection="column" gap={0} flexShrink={1} flexGrow={1} minWidth={0}>
-        <Text weight={s.isNow ? 'semibold' : 'medium'} wrap="wrap">
-          {clip(s.text, s.isNow ? 160 : 110)}
-        </Text>
-        <Text size="caption" dimColor wrap="truncate-end">
-          {meta}
-        </Text>
-        {s.recap && !isInHero && !s.isNow ? (
-          <Text size="footnote" color="#b4b8be" wrap="wrap">
-            {clip(s.recap, 180)}
-          </Text>
-        ) : null}
-        {s.ask && !isInHero && !s.isNow ? (
-          <Text size="footnote" color={WAIT} wrap="wrap">
-            {`Asked you: ${clip(s.ask, 120)}`}
-          </Text>
-        ) : null}
-        {s.chips.length ? (
-          <Box flexDirection="row" flexWrap="wrap" columnGap={2} rowGap={0}>
-            {s.chips.map(c => chipView($, c, v, { Box, Text, Button, Link }))}
-          </Box>
-        ) : null}
-      </Box>
-    </Box>
-  )
-}
-
 function chipView($: EngineInterface, c: Chip, v: View, el: Els) {
   const { Box, Text, Button, Link } = el
-  const color = TONE[c.tone]
   if (c.href && Link) {
     return (
       <Link key={`chip:${c.label}`} href={c.href}>
@@ -481,12 +380,12 @@ function chipView($: EngineInterface, c: Chip, v: View, el: Els) {
   }
   return (
     <Box key={`chip:${c.label}`} flexDirection="row" gap={1}>
-      <Text size="caption" color={color}>
-        {`${c.tone === 'done' ? '✓' : c.tone === 'warn' ? '●' : '◆'} ${c.label}`}
+      <Text size="footnote" color={TONE[c.tone]}>
+        {c.label}
       </Text>
       {c.run ? (
         <Button key={`copy:${c.label}`} plain onPress={(press: { surface: string }) => copyRun($, c.run ?? '', press.surface)}>
-          <Text size="caption" color={INK.run}>
+          <Text size="footnote" color={INK.run}>
             {v.copied === c.run ? 'Copied' : 'Copy run command'}
           </Text>
         </Button>
@@ -640,12 +539,13 @@ async function vitals($: EngineInterface, context: RawContext, limits: RawLimit[
 async function noteRequest($: EngineInterface, text: string) {
   const clean = promptText(text).slice(0, 240)
   if (!clean) return
-  await safely($, l => ({ ...l, turns: [...l.turns, { n: l.turns.length + 1, text: clean, at: Date.now(), endedAt: null }].slice(-120) }))
+  const auto = isAutomated(text)
+  await safely($, l => ({ ...l, turns: [...l.turns, { n: l.turns.length + 1, text: clean, at: Date.now(), endedAt: null, auto }].slice(-120) }))
 }
 
 async function notePlan($: EngineInterface, args: Record<string, unknown>) {
   await safely($, l => {
-    const n = l.turns[l.turns.length - 1]?.n ?? 0
+    const n = headTurn(l)
     // A fresh list starts this request's plan; steps alone move the one it has.
     const base = Array.isArray(args.items) || l.planTurn === n ? (l.plan ?? []) : []
     return { ...l, plan: applyPlan(base, args), planTurn: n }
@@ -664,7 +564,7 @@ async function noteWrap($: EngineInterface, args: Record<string, unknown>) {
 }
 
 async function startTurn($: EngineInterface, turnId: string) {
-  await safely($, l => ({ ...l, isWorking: true, mainTurn: turnId }))
+  await safely($, l => ({ ...l, isWorking: true, mainTurn: turnId, startedAt: Date.now() }))
   if (!ticker) {
     // Redraw every few seconds while working so the elapsed times move.
     ticker = $.clock.every(3000, () => void bump($))
@@ -673,6 +573,8 @@ async function startTurn($: EngineInterface, turnId: string) {
 
 async function endTurn($: EngineInterface, turnId: string, reason: TurnEnd) {
   const l0 = await read($, ledger)
+  // Nothing in progress: a second end for the same turn adds no time.
+  if (!l0.isWorking) return
   // A turn nested inside the main one (a side query, a hook's own call) ends
   // without ending the work: only the main turn's own end does.
   if (l0.mainTurn && l0.mainTurn !== turnId) {
@@ -688,7 +590,10 @@ async function endTurn($: EngineInterface, turnId: string, reason: TurnEnd) {
     live: [],
     asking: null,
     turnEndedAt: now,
-    turns: l.turns.map((t, i) => (i === l.turns.length - 1 && !t.endedAt ? { ...t, endedAt: now, end: reason } : t)),
+    startedAt: null,
+    turns: l.turns.map((t, i) =>
+      i === l.turns.length - 1 ? { ...t, endedAt: now, end: reason, workMs: (t.workMs ?? 0) + (now - (l.startedAt ?? t.at)) } : t,
+    ),
   }))
   ticker?.cancel()
   ticker = null
