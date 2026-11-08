@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { glyph, mark, rings, timeline, track } from './art'
+import { glyph, mark, rings, timelineRow, track } from './art'
 import { cutDiff, parseLog, parseStatus } from './git'
 import { applyPlan, changeGroups, EMPTY, fileRows, place, promptText, stories } from './model'
 
@@ -260,25 +260,37 @@ test('automated prompts fold into the request before them', async ($, on) => {
   await ui.unmount()
 })
 
-test('the timeline draws a row per request with icons and counts', () => {
+test('a request row is drawn at a fixed size with icons and counts', () => {
   const at = 1_700_000_000_000
-  const svg = timeline(
-    stories(
-      {
-        ...EMPTY,
-        turns: [{ n: 1, text: 'Fix <it>', at, endedAt: at + 90_000, workMs: 90_000 }],
-        steps: [
-          { kind: 'edit', at, ms: 10, turn: 1, label: 'Editing a.ts', agent: null },
-          { kind: 'run', at, ms: 10, turn: 1, label: 'Ran tests', agent: null },
-          { kind: 'run', at, ms: 10, turn: 1, label: 'Ran build', agent: null },
-        ],
-      },
-      at + 100_000,
-    ),
-    360,
-    '#fff',
+  const [story] = stories(
+    {
+      ...EMPTY,
+      turns: [{ n: 1, text: 'Fix <it>', at, endedAt: at + 90_000, workMs: 90_000 }],
+      steps: [
+        { kind: 'edit', at, ms: 10, turn: 1, label: 'Editing a.ts', agent: null },
+        { kind: 'run', at, ms: 10, turn: 1, label: 'Ran tests', agent: null },
+        { kind: 'run', at, ms: 10, turn: 1, label: 'Ran build', agent: null },
+      ],
+    },
+    at + 100_000,
   )
+  const svg = timelineRow(story!, true, false, 360, '#fff')
+  expect(svg).toContain('height="56"')
   expect(svg).toContain('Fix &lt;it&gt;')
   expect(svg).toContain('>1m<')
   expect(svg).toContain('>2<')
+})
+
+test('four requests show at full size; the rest open below on Show more', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  for (let i = 1; i <= 6; i++) await $.prompt.submit({ text: `Request ${i}` } as any)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const rows = async () => ((await ui.findAll({ type: 'Svg' })) as any[]).filter(x => /^Request \d$/.test(String(x.props?.alt ?? ''))).length
+  expect(await rows()).toBe(4)
+  expect((await ui.find({ type: 'Button', key: 'all-requests' }))?.text).toBe('Show 2 more  ∨')
+  await ui.press({ key: 'all-requests' })
+  expect(await rows()).toBe(6)
+  expect((await ui.find({ type: 'Button', key: 'all-requests' }))?.text).toBe('Show less  ∧')
+  await ui.unmount()
 })

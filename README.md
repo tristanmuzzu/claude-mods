@@ -58,7 +58,7 @@ shape and colour rather than text. Top to bottom:
   the first line of its own recap is the headline.
 - **Vitals**: rings for context before auto-compaction, the 5-hour limit and
   the weekly limit, with reset times.
-- **This chat**: the requests as a timeline: a node per request (breathing
+- **This chat**: the last four requests as a timeline (Show more opens the rest below, same size): a node per request (breathing
   while it runs, a tick when done, amber when it left you a question), one
   line of what you asked, how long Claude worked on it, and icons with counts
   for edits, commands, lookups, web steps, helpers and commits (pushed or

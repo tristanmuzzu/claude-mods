@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { Kind, Ledger, PlanItem, Probe, Repo, TurnEnd, View } from '../types'
-import { DONE, glyph, INK, liveDot, moodColor, QUIET, rings, RINGS_H, timeline, track, WAIT } from './art'
+import { DONE, glyph, INK, liveDot, moodColor, QUIET, rings, RINGS_H, ROW, timelineRow, track, WAIT } from './art'
 import type { Mood } from './art'
 import { diffOf, gitTrouble, rootOf, scan } from './git'
 import {
@@ -60,7 +60,8 @@ const DOING: Record<Kind, string> = {
 }
 
 const TONE = { done: DONE, warn: WAIT, plain: '#c9cdd3' } as const
-const STORIES_SHOWN = 5
+/** Requests shown before "Show more": always drawn at full size. */
+const STORIES_SHOWN = 4
 
 let ticker: { cancel: () => void } | null = null
 let pending: { cancel: () => void } | null = null
@@ -260,8 +261,17 @@ export const register: Register = on => {
           <Box key="chat" flexDirection="column" gap={1}>
             {section('This chat', `${all.length} request${all.length === 1 ? '' : 's'}`)}
             {Svg ? (
-              <Box>
-                <Svg source={timeline(shown, WIDE, tint)} width={WIDE} alt={shown.map(s => s.text).join('\n')} isInteractive />
+              <Box flexDirection="column" gap={0}>
+                {shown.map((s, i) => (
+                  <Svg
+                    key={`story:${s.n}`}
+                    source={timelineRow(s, i > 0, i < shown.length - 1, WIDE, tint)}
+                    width={WIDE}
+                    height={ROW}
+                    alt={s.text}
+                    isInteractive
+                  />
+                ))}
               </Box>
             ) : (
               shown.map(s => (
@@ -276,10 +286,10 @@ export const register: Register = on => {
               </Box>
             ) : null}
             {all.length > STORIES_SHOWN ? (
-              <Box>
+              <Box flexDirection="row" justifyContent="center">
                 <Button key="all-requests" plain onPress={() => flipAll($)}>
-                  <Text size="footnote" dimColor>
-                    {v.showAllRequests ? 'Show fewer' : `Show ${all.length - STORIES_SHOWN} earlier`}
+                  <Text size="footnote" color="#9aa0a6">
+                    {v.showAllRequests ? 'Show less  ∧' : `Show ${all.length - STORIES_SHOWN} more  ∨`}
                   </Text>
                 </Button>
               </Box>
@@ -423,11 +433,8 @@ function groupLines($: EngineInterface, g: Group, v: View, el: Els) {
         <Box flexDirection="column" gap={0} paddingLeft={2} paddingTop={1}>
           {g.files.slice(0, 20).map(r => fileLine($, r, v, { Box, Text, Button, Code }))}
           {g.byCommands.length ? (
-            <Text size="caption" dimColor wrap="wrap">
-              {`${g.files.length ? 'Also changed' : 'Changed'} by commands: ${g.byCommands
-                .slice(0, 8)
-                .map(r => r.name)
-                .join(', ')}${g.byCommands.length > 8 ? ` and ${g.byCommands.length - 8} more` : ''}`}
+            <Text size="footnote" dimColor>
+              {`${g.files.length ? '+ ' : ''}${g.byCommands.length} file${g.byCommands.length === 1 ? '' : 's'} changed by commands`}
             </Text>
           ) : null}
         </Box>

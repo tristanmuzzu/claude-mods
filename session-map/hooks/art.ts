@@ -227,51 +227,47 @@ function icon(k: Kind | 'commit', x: number, y: number, c: string): string {
   return `<g transform="translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(1.2)">${body}</g>`
 }
 
-const ROW = 56
 const ICON_ORDER: Kind[] = ['edit', 'run', 'read', 'web', 'agent', 'publish']
 
+/** Height of one request's row in the timeline, in CSS pixels. */
+export const ROW = 56
+
 /**
- * The chat's requests as a rail: a node per request (breathing while it
- * runs, a tick when done, amber when it left you a question, red when it
- * stopped), one line of what you asked, how long Claude worked, and icons
- * with counts for what it did. Hover a request for the whole text and recap.
+ * One request as a row of the rail, drawn at a fixed size so a long chat
+ * never shrinks it: a node (breathing while it runs, a tick when done, amber
+ * when it left you a question, red when it stopped), one line of what you
+ * asked, how long Claude worked, and icons with counts for what it did. The
+ * rail runs into the rows above and below. Hover for the text and recap.
  */
-export function timeline(list: Story[], width: number, live: string): string {
-  const rows = list.map((s, i) => {
-    const y = i * ROW
-    const node = s.isNow ? 'live' : s.end === 'aborted' || s.end === 'error' ? 'stopped' : s.ask ? 'ask' : s.ms !== null ? 'done' : 'quiet'
-    const rail = i < list.length - 1 ? `<rect x="9" y="${y + 24}" width="2" height="${ROW - 14}" rx="1" fill="#ffffff" fill-opacity="0.09"/>` : ''
-    const dot = `<g transform="translate(1 ${y + 4}) scale(1.25)">${markBody(node, live)}</g>`
-    const dur = s.ms !== null ? since(s.ms) : ''
-    const titleRoom = Math.floor((width - 32 - dur.length * 8 - 12) / 7.9)
-    const title = `<text x="30" y="${y + 17}" ${FONT} font-size="15" font-weight="${s.isNow ? 650 : 550}" fill="${s.isNow ? '#ffffff' : '#e3e3e3'}">${esc(clipTo(s.text, titleRoom))}</text>`
-    const durText = dur
-      ? `<text x="${width - 2}" y="${y + 17}" text-anchor="end" ${FONT} font-size="13" fill="${s.isNow ? live : '#8d939c'}">${esc(dur)}</text>`
-      : ''
-    // Second line: when, then an icon and a count for each kind of work, then commits.
-    const parts: string[] = []
-    let x = 30
-    const when = s.isNow ? 'now' : hhmm(s.at)
-    parts.push(`<text x="${x}" y="${y + 39}" ${FONT} font-size="12.5" fill="${s.isNow ? live : '#8d939c'}">${when}</text>`)
-    x += when.length * 7.2 + 12
-    for (const k of ICON_ORDER) {
-      const n = s.counts[k]
-      if (!n || x > width - 40) continue
-      parts.push(icon(k, x, y + 28.5, INK[k]))
-      parts.push(`<text x="${x + 18}" y="${y + 39}" ${FONT} font-size="12.5" fill="#c2c6cc">${n}</text>`)
-      x += 18 + String(n).length * 7.4 + 13
-    }
-    if (s.commits && x < width - 60) {
-      const c = s.unpushed ? WAIT : DONE
-      const word = s.unpushed ? 'not pushed' : 'pushed'
-      parts.push(icon('commit', x, y + 28.5, c))
-      parts.push(`<text x="${x + 18}" y="${y + 39}" ${FONT} font-size="12.5" fill="${c}">${s.commits} ${word}</text>`)
-    }
-    const tip = [s.text, s.work ? `\n${s.work}` : '', s.recap ? `\n${s.recap}` : '', s.ask ? `\nAsked you: ${s.ask}` : ''].join('')
-    return `<g><title>${esc(tip)}</title><rect x="0" y="${y}" width="${width}" height="${ROW - 4}" fill="#000" fill-opacity="0"/>${rail}${dot}${title}${durText}${parts.join('')}</g>`
-  })
-  const h = Math.max(ROW, list.length * ROW - 4)
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}" viewBox="0 0 ${width} ${h}">${rows.join('')}</svg>`
+export function timelineRow(s: Story, hasAbove: boolean, hasBelow: boolean, width: number, live: string): string {
+  const node = s.isNow ? 'live' : s.end === 'aborted' || s.end === 'error' ? 'stopped' : s.ask ? 'ask' : s.ms !== null ? 'done' : 'quiet'
+  const railUp = hasAbove ? `<rect x="9" y="0" width="2" height="5" fill="#ffffff" fill-opacity="0.09"/>` : ''
+  const railDown = hasBelow ? `<rect x="9" y="24" width="2" height="${ROW - 24}" fill="#ffffff" fill-opacity="0.09"/>` : ''
+  const dot = `<g transform="translate(1 5) scale(1.25)">${markBody(node, live)}</g>`
+  const dur = s.ms !== null ? since(s.ms) : ''
+  const titleRoom = Math.floor((width - 32 - dur.length * 8 - 12) / 7.9)
+  const title = `<text x="30" y="18" ${FONT} font-size="15" font-weight="${s.isNow ? 650 : 550}" fill="${s.isNow ? '#ffffff' : '#e3e3e3'}">${esc(clipTo(s.text, titleRoom))}</text>`
+  const durText = dur ? `<text x="${width - 2}" y="18" text-anchor="end" ${FONT} font-size="13" fill="${s.isNow ? live : '#8d939c'}">${esc(dur)}</text>` : ''
+  // Second line: when, then an icon and a count for each kind of work, then commits.
+  const parts: string[] = []
+  let x = 30
+  const when = s.isNow ? 'now' : hhmm(s.at)
+  parts.push(`<text x="${x}" y="40" ${FONT} font-size="12.5" fill="${s.isNow ? live : '#8d939c'}">${when}</text>`)
+  x += when.length * 7.2 + 12
+  for (const k of ICON_ORDER) {
+    const n = s.counts[k]
+    if (!n || x > width - 40) continue
+    parts.push(icon(k, x, 29.5, INK[k]))
+    parts.push(`<text x="${x + 18}" y="40" ${FONT} font-size="12.5" fill="#c2c6cc">${n}</text>`)
+    x += 18 + String(n).length * 7.4 + 13
+  }
+  if (s.commits && x < width - 60) {
+    const c = s.unpushed ? WAIT : DONE
+    parts.push(icon('commit', x, 29.5, c))
+    parts.push(`<text x="${x + 18}" y="40" ${FONT} font-size="12.5" fill="${c}">${s.commits} ${s.unpushed ? 'not pushed' : 'pushed'}</text>`)
+  }
+  const tip = [s.text, s.work ? `\n${s.work}` : '', s.recap ? `\n${s.recap}` : '', s.ask ? `\nAsked you: ${s.ask}` : ''].join('')
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${ROW}" viewBox="0 0 ${width} ${ROW}"><title>${esc(tip)}</title><rect width="${width}" height="${ROW}" fill="#000" fill-opacity="0"/>${railUp}${railDown}${dot}${title}${durText}${parts.join('')}</svg>`
 }
 
 function clipTo(s: string, n: number): string {
