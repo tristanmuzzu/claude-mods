@@ -32,8 +32,11 @@ const PROJECT = '/home/tristan/projects/claude-mods'
 const PLAN = 'mcp__ccd_turn__update_plan'
 const WRAP = 'mcp__ccd_turn__wrap_up'
 
-// Nothing sits beneath the plugin: these hooks stand for the engine.
-function engine(on: any) {
+// Nothing sits beneath the plugin: these hooks stand for the engine. A test that stands in for
+// one of them itself names it in `own`.
+function engine(on: any, own: string[] = []) {
+  const real = on
+  on = (event: string, ...rest: unknown[]) => (own.includes(event) ? undefined : real(event, ...rest))
   on('command.register', () => ({ value: { command: 'map' } }))
   on('tool.register', () => ({ value: { tool: 'mcp__session-map__inspect' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -359,4 +362,27 @@ test('a diff becomes editor rows with line numbers', () => {
     'ctx:40:end',
     'add:41:tail',
   ])
+})
+
+test('/map opens the pane, and closes it when it is already on screen', async ($, on) => {
+  engine(on, ['ui.open'])
+  let panes: { id: string; title: string; isShown: boolean; isFocused: boolean; isPlaced: boolean }[] = []
+  on('ui.open', (_: unknown, e: any) => {
+    panes = [{ id: e.id, title: e.title ?? e.id, isShown: true, isFocused: false, isPlaced: true }]
+    return { value: { isPlaced: true } }
+  })
+  on('ui.panes', () => ({ value: panes }))
+  on('ui.close', (_: unknown, e: any) => {
+    panes = panes.filter(p => p.id !== e.id)
+    return { value: undefined }
+  })
+  on('command.run', () => ({ text: '' }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  expect(panes.map(p => p.id)).toEqual(['session-map'])
+
+  const run = () => ($ as any).command.run({ command: 'map', args: '' })
+  expect((await run()).text).toContain('closed')
+  expect(panes).toEqual([])
+  expect((await run()).text).toContain('opened')
+  expect(panes.map(p => p.id)).toEqual(['session-map'])
 })

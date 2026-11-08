@@ -73,7 +73,7 @@ const strayEnds: string[] = []
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
-    await $.command.register({ name: 'map', description: 'Open the session map pane' }).catch(() => undefined)
+    await $.command.register({ name: 'map', description: 'Open or close the session map pane' }).catch(() => undefined)
     await $.tool
       .register({
         name: 'inspect',
@@ -86,7 +86,13 @@ export const register: Register = on => {
     return result
   })
 
+  /** `/map` opens the pane, or closes it when it is already on screen: the app's top bar has no place for a mod's pane. */
   on('command.run', { command: 'map' }, async $ => {
+    const shown = (await $.ui.panes()).some(p => p.id === PANE && p.isShown && p.isPlaced)
+    if (shown) {
+      await $.ui.close({ id: PANE })
+      return { text: 'Session map closed. /map opens it again.' }
+    }
     const opened = await $.ui.open({ id: PANE, title: TITLE, focus: true })
     return { text: opened.isPlaced ? 'Session map opened.' : `Session map is waiting for room: ${opened.reason}` }
   })
