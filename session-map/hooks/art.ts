@@ -294,6 +294,36 @@ function short(n: number): string {
   return String(n)
 }
 
+const LANG: Record<string, [string, string]> = {
+  ts: ['TS', '#4b9eff'],
+  tsx: ['TSX', '#4b9eff'],
+  js: ['JS', '#f1d04b'],
+  jsx: ['JSX', '#f1d04b'],
+  mjs: ['JS', '#f1d04b'],
+  py: ['PY', '#6cb2f0'],
+  md: ['MD', '#b9bec6'],
+  json: ['{ }', '#f0a23d'],
+  sh: ['SH', '#7ddc7a'],
+  html: ['</>', '#f0754b'],
+  css: ['CSS', '#b07cf0'],
+  yml: ['YML', '#e46c8c'],
+  yaml: ['YML', '#e46c8c'],
+  toml: ['TML', '#c9a36b'],
+  rs: ['RS', '#e0895e'],
+  go: ['GO', '#5ccfe6'],
+  svg: ['SVG', '#f2b94b'],
+  png: ['IMG', '#a6b3c2'],
+  jpg: ['IMG', '#a6b3c2'],
+  txt: ['TXT', '#b9bec6'],
+}
+
+/** A small rounded badge naming the file's type in its usual colour. */
+export function badge(name: string): string {
+  const ext = /\.([a-z0-9]+)$/i.exec(name)?.[1]?.toLowerCase() ?? ''
+  const [label, c] = LANG[ext] ?? [ext ? ext.slice(0, 3).toUpperCase() : '•', '#9aa0a6']
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="30" height="18" viewBox="0 0 30 18"><rect x="0.5" y="0.5" width="29" height="17" rx="4.5" fill="${c}" fill-opacity="0.16" stroke="${c}" stroke-opacity="0.35"/><text x="15" y="12.6" text-anchor="middle" ${FONT} font-size="${label.length > 2 ? 8 : 9}" font-weight="700" fill="${c}">${esc(label)}</text></svg>`
+}
+
 /** A small dot that breathes, for a row Claude is on right now. */
 export function liveDot(c: string): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="3.4" fill="${c}"><animate attributeName="opacity" values="1;0.25;1" dur="1.2s" repeatCount="indefinite"/></circle></svg>`

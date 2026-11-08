@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { Kind, Ledger, PlanItem, Probe, Repo, TurnEnd, View } from '../types'
-import { DONE, glyph, INK, liveDot, moodColor, QUIET, rings, RINGS_H, ROW, timelineRow, track, WAIT } from './art'
+import { badge, DONE, glyph, INK, liveDot, moodColor, QUIET, rings, RINGS_H, ROW, timelineRow, track, WAIT } from './art'
 import type { Mood } from './art'
 import { diffOf, gitTrouble, rootOf, scan } from './git'
 import {
@@ -301,7 +301,7 @@ export const register: Register = on => {
         {groups.length ? (
           <Box key="changes" flexDirection="column" gap={1}>
             {section('Changes', '')}
-            {groups.map(g => groupLines($, g, v, { Box, Text, Button, Code }))}
+            {groups.map(g => groupLines($, g, v, { Box, Text, Button, Code, Svg }))}
           </Box>
         ) : null}
       </Box>
@@ -411,7 +411,7 @@ function chipView($: EngineInterface, c: Chip, v: View, el: Els) {
 const FILES_SHOWN = 8
 
 function groupLines($: EngineInterface, g: Group, v: View, el: Els) {
-  const { Box, Text, Button, Code } = el
+  const { Box, Text, Button, Code, Svg } = el
   const isOpen = v.openRepos.includes(g.key)
   // Claude's own edits first, then what commands changed: every file is listed.
   const files = [...g.files, ...g.byCommands]
@@ -437,7 +437,7 @@ function groupLines($: EngineInterface, g: Group, v: View, el: Els) {
       </Box>
       {isOpen ? (
         <Box flexDirection="column" gap={1} paddingLeft={2} paddingTop={1}>
-          {shown.map(r => fileLine($, r, v, { Box, Text, Button, Code }))}
+          {shown.map(r => fileLine($, r, v, { Box, Text, Button, Code, Svg }))}
           {files.length > FILES_SHOWN ? (
             <Button key={`more-files:${g.key}`} plain onPress={() => toggleMore($, g.key)}>
               <Text size="footnote" color="#9aa0a6">
@@ -467,43 +467,44 @@ function shortDir(dir: string): string {
 }
 
 function fileLine($: EngineInterface, r: FileRow, v: View, el: Els) {
-  const { Box, Text, Button, Code } = el
+  const { Box, Text, Button, Code, Svg } = el
   const isOpen = v.openPath === r.path
-  const word = r.isDeleted ? 'deleted' : (FILE_WORD[r.state] ?? '')
-  const color = r.isDeleted ? QUIET : r.state === 'pushed' || r.state === 'committed' ? DONE : r.state === 'editing' ? INK.edit : '#e6e6e6'
+  const word = r.isDeleted ? 'deleted' : r.state === 'new' ? 'new' : r.state === 'editing' ? 'editing now' : ''
+  const color = r.isDeleted ? QUIET : r.state === 'editing' ? INK.edit : '#e8e8e8'
+  const wasOpened = v.opened === r.path
   return (
     <Box key={`file:${r.path}`} flexDirection="column" gap={0}>
       <Box flexDirection="row" gap={1} alignItems="center">
+        {Svg ? <Svg source={badge(r.name)} width={30} height={18} alt={r.name} /> : null}
         <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} gap={0}>
           <Button key={`open:${r.path}`} plain onPress={() => openFile($, r)}>
-            <Text color={QUIET}>{isOpen ? '▾ ' : '▸ '}</Text>
             <Text color={color} weight="medium" wrap="truncate-end">
               {r.name}
             </Text>
           </Button>
-          <Box paddingLeft={2}>
-            <Text size="caption" dimColor wrap="truncate-end">
-              {[shortDir(r.dir), word].filter(Boolean).join(' · ')}
-            </Text>
-          </Box>
+          <Text size="caption" dimColor wrap="truncate-start">
+            {[r.dir || '/', word].filter(Boolean).join(' · ')}
+          </Text>
         </Box>
         {r.added || r.removed ? (
-          <Text size="caption" tabular>
-            <Text color="diffAdded">{`+${r.added}`}</Text>
-            <Text color="diffRemoved">{` −${r.removed}`}</Text>
+          <Text size="footnote" tabular>
+            {r.added ? <Text color="diffAdded">{`+${r.added}`}</Text> : null}
+            {r.added && r.removed ? ' ' : ''}
+            {r.removed ? <Text color="diffRemoved">{`−${r.removed}`}</Text> : null}
           </Text>
         ) : null}
         {r.isDeleted ? null : (
-          <Button key={`edit:${r.path}`} plain label={`Open ${r.name} in the editor`} onPress={() => openInEditor($, r.path)}>
-            <Text size="footnote" color={v.opened === r.path ? DONE : '#8fb4ff'}>
-              {v.opened === r.path ? 'Opened' : 'Open ↗'}
-            </Text>
+          // A Button holds text alone (a drawn icon cannot take the press), so the edit icon is a glyph.
+          <Button key={`edit:${r.path}`} plain onPress={() => openInEditor($, r.path)}>
+            <Text color={wasOpened ? DONE : '#9fbfff'}>{wasOpened ? '✓' : '✎'}</Text>
           </Button>
         )}
       </Box>
       {isOpen && Code ? (
         v.openDiff || r.diff ? (
-          <Code format="diff" source={v.openDiff || r.diff} path={r.path} wrap="truncate-end" />
+          <Box paddingTop={1}>
+            <Code format="diff" source={v.openDiff || r.diff} path={r.path} wrap="truncate-end" />
+          </Box>
         ) : (
           <Text size="caption" dimColor>
             No line changes to show.

@@ -517,7 +517,10 @@ export type Group = {
 
 /** The session's changes rolled up per project, busiest first; untouched projects are left out. */
 export function changeGroups(l: Ledger): Group[] {
-  const rows = fileRows(l).filter(r => r.state !== 'read' && r.state !== 'reading')
+  // Real edits only: everything Claude changed through its own tools, and what
+  // commands changed only where git counts changed lines (that leaves out the
+  // engine's own bookkeeping: file-history snapshots, state, copies).
+  const rows = fileRows(l).filter(r => r.state !== 'read' && r.state !== 'reading' && (!r.isShell || r.added + r.removed > 0 || r.isDeleted))
   const byKey: Record<string, FileRow[]> = {}
   for (const r of rows) (byKey[r.repo ? r.repo.root : r.project] ??= []).push(r)
   for (const r of l.repos) if (r.commits.length) byKey[r.root] ??= []

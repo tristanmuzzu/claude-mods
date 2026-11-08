@@ -66,8 +66,8 @@ shape and colour rather than text. Top to bottom:
   app messages fold into the request they belong to.
 - **Changes**: one line per project with where it stands in git ("3 files
   not committed", "2 commits, all pushed"). Press it to list every changed
-  file, Claude's own edits first and then what commands changed (eight at a
-  time, Show more for the rest). Press a file for its diff, or **Open ↗** to
+  file Claude edited, plus files commands changed with real line changes (eight at a
+  time, Show more for the rest). Press a file for its diff, or ✎ to
   open it in your code editor: the first of VS Code, Cursor, Zed, Codium,
   Sublime Text or GNOME Text Editor that is installed.
 
