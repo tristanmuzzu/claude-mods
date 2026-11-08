@@ -16,6 +16,7 @@ import {
   describe,
   EMPTY,
   isAutomated,
+  newFileDiff,
   pathOf,
   planPlace,
   promptText,
@@ -561,7 +562,7 @@ function fileLine($: EngineInterface, r: FileRow, v: View, el: Els) {
 }
 
 /** Most diff rows drawn inline; the rest are a press away in the editor. */
-const DIFF_ROWS = 400
+const DIFF_ROWS = 2000
 const ROW_TINT = { add: '#1f3a2a', del: '#4a2226', ctx: undefined, gap: undefined } as const
 const ROW_INK = { add: 'diffAdded', del: 'diffRemoved', ctx: '#c9ccd3', gap: QUIET } as const
 const ROW_MARK = { add: '+', del: '−', ctx: ' ', gap: '' } as const
@@ -852,11 +853,19 @@ async function openFile($: EngineInterface, r: FileRow) {
     return
   }
   await update($, view, x => ({ ...x, openPath: r.path, openDiff: null }))
+  let diff = ''
   if (r.repo && r.state !== 'read') {
     const rel = r.path.slice(r.repo.root.length + 1)
-    const diff = await diffOf($, r.repo.root, rel, r.state === 'new', r.repo.headAtStart).catch(() => '')
-    if (diff) await update($, view, x => (x.openPath === r.path ? { ...x, openDiff: diff } : x))
+    diff = await diffOf($, r.repo.root, rel, r.state === 'new', r.repo.headAtStart).catch(() => '')
   }
+  // Outside git a new file's diff would be the ledger's first lines only: read the file whole.
+  if (!diff && r.state === 'new' && !r.isDeleted) {
+    diff = await $.fs
+      .read(r.path)
+      .then(text => newFileDiff(text.replace(/\r?\n$/, '').split(/\r?\n/), r.path, DIFF_ROWS))
+      .catch(() => '')
+  }
+  if (diff) await update($, view, x => (x.openPath === r.path ? { ...x, openDiff: diff } : x))
 }
 
 async function copyRun($: EngineInterface, text: string, surface: string) {

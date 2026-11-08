@@ -386,3 +386,23 @@ test('/map opens the pane, and closes it when it is already on screen', async ($
   expect((await run()).text).toContain('opened')
   expect(panes.map(p => p.id)).toEqual(['session-map'])
 })
+
+test('a new file outside git opens whole, not just the first lines kept while it was written', async ($, on) => {
+  engine(on)
+  const DOCS = '/home/tristan/Documents/Projects/Idea'
+  const body = Array.from({ length: 120 }, (_, i) => `line ${i + 1}`).join('\n') + '\n'
+  on('fs.read', (_: unknown, e: any) => ({ value: e.path === `${DOCS}/Reel.tsx` ? body : '' }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'Make a reel' } as any)
+  await ($ as any).turn.start({ text: 'Make a reel', turnId: 'main-1' })
+  await $.tool.call({ tool: 'Write', file_path: `${DOCS}/Reel.tsx`, content: body })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const group = (await ui.findAll({ type: 'Button' })).find((b: any) => /^group-btn:/.test(b.key ?? ''))
+  if (group?.key) await ui.press({ key: group.key })
+  await press(ui, `open:${DOCS}/Reel.tsx`)
+  const diff = (await ui.find({ type: 'Box', key: `diff:${DOCS}/Reel.tsx` }))?.text ?? ''
+  expect(diff).toContain('line 41')
+  expect(diff).toContain('line 120')
+  await ui.unmount()
+})

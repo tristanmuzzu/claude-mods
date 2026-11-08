@@ -84,11 +84,11 @@ export function cutDiff(diff: string): string {
   const lines = diff.split('\n')
   const start = lines.findIndex(l => l.startsWith('--- '))
   const body = start >= 0 ? lines.slice(start) : lines
-  if (body.length <= 120) return body.join('\n').trimEnd()
+  if (body.length <= 2000) return body.join('\n').trimEnd()
   // Keep whole hunks only, so the result still parses as a diff.
   const kept: string[] = []
   for (const line of body) {
-    if (line.startsWith('@@') && kept.length > 100) break
+    if (line.startsWith('@@') && kept.length > 1900) break
     kept.push(line)
   }
   return kept.join('\n').trimEnd()

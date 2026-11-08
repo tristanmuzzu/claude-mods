@@ -226,8 +226,9 @@ function edit(oldS: string, newS: string, path: string): TouchDelta {
   return { edits: 1, added: add.length, removed: del.length, diff: oldCount + newCount > 0 ? diff : '' }
 }
 
-function newFileDiff(lines: string[], path: string): string {
-  const shown = lines.slice(0, 40)
+/** A new file as a diff of added lines; the ledger keeps the first `limit`, opening the file reads it whole. */
+export function newFileDiff(lines: string[], path: string, limit = 40): string {
+  const shown = lines.slice(0, limit)
   if (!shown.length) return ''
   return [`--- /dev/null`, `+++ b/${base(path)}`, `@@ -0,0 +1,${shown.length} @@`, ...shown.map(x => `+${x}`)].join('\n')
 }
