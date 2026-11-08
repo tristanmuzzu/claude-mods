@@ -411,7 +411,7 @@ function chipView($: EngineInterface, c: Chip, v: View, el: Els) {
 /** Files listed in an open project before "Show more". */
 const FILES_SHOWN = 8
 
-const DISC = 26
+const DISC = 22
 
 /** Show N more / Show less, with the glass chevron beside the words. Both the words and the disc press it. */
 function moreToggle(
