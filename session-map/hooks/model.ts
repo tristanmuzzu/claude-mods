@@ -1,7 +1,7 @@
 // Pure functions: reading tool calls into the ledger, and the view model the
 // pane draws from. Nothing here touches `$`, so all of it is testable alone.
 
-import type { Kind, Ledger, Live, Repo, Result, Step, Touch } from '../types'
+import type { Kind, Ledger, Live, PlanItem, Repo, Result, Step, Touch, Turn, TurnEnd } from '../types'
 
 export const EMPTY: Ledger = {
   steps: [],
@@ -15,6 +15,10 @@ export const EMPTY: Ledger = {
   vitals: null,
   cwd: '',
   model: '',
+  plan: [],
+  planTurn: 0,
+  asking: null,
+  mainTurn: null,
 }
 
 /** Housekeeping calls that say nothing about the work itself. */
@@ -261,6 +265,8 @@ export type FileRow = {
   removed: number
   at: number
   isShell: boolean
+  /** Deleted in the working tree: nothing left to open. */
+  isDeleted: boolean
   diff: string
   repo: Repo | null
 }
@@ -279,6 +285,7 @@ export function fileRows(l: Ledger): FileRow[] {
     const rel = repo ? path.slice(repo.root.length + 1) : place(path).rel
     const cut = rel.lastIndexOf('/')
     const git = repo?.files.find(f => f.rel === rel) ?? null
+    const since = repo?.changed?.find(f => f.rel === rel) ?? null
     const wasDirty = repo?.baseline.includes(rel) ?? false
     let state: FileState
     let added = t?.added ?? 0
@@ -290,6 +297,8 @@ export function fileRows(l: Ledger): FileRow[] {
         added = git.added
         removed = git.removed
       }
+    } else if (repo && since && !wasDirty) {
+      state = repo.hasUpstream && repo.ahead === 0 ? 'pushed' : 'committed'
     } else if (repo && (t?.edits ?? 0) > 0) {
       state = repo.commits.some(c => c.at * 1000 >= (t?.at ?? 0) - 120_000) || repo.commits.length > 0
         ? repo.hasUpstream && repo.ahead === 0
@@ -298,6 +307,11 @@ export function fileRows(l: Ledger): FileRow[] {
         : 'changed'
     } else if ((t?.edits ?? 0) > 0) state = t?.isNew ? 'new' : 'changed'
     else state = 'read'
+    // Counted since the session started, as git sees it, wherever git has the file.
+    if (since && !wasDirty) {
+      added = since.added
+      removed = since.removed
+    }
     return {
       path,
       name: cut >= 0 ? rel.slice(cut + 1) : rel,
@@ -308,6 +322,7 @@ export function fileRows(l: Ledger): FileRow[] {
       removed,
       at,
       isShell,
+      isDeleted: Boolean(git?.code.includes('D')),
       diff: t?.diff ?? '',
       repo,
     }
@@ -316,7 +331,7 @@ export function fileRows(l: Ledger): FileRow[] {
   for (const t of l.touches) rows[t.path] = make(t.path, t.at, false, t)
   for (const x of l.live) if (x.path && !rows[x.path]) rows[x.path] = make(x.path, x.at, false, null)
   for (const r of l.repos) {
-    for (const f of r.files) {
+    for (const f of [...r.files, ...(r.changed ?? [])]) {
       if (r.baseline.includes(f.rel)) continue
       const path = `${r.root}/${f.rel}`
       if (!rows[path]) rows[path] = make(path, r.scannedAt, true, null)
@@ -326,27 +341,256 @@ export function fileRows(l: Ledger): FileRow[] {
   return Object.values(rows).sort((a, b) => rank[a.state] - rank[b.state] || b.at - a.at)
 }
 
-// ---------------------------------------------------------------- requests
+// ---------------------------------------------------------------- the task list
 
-export type RequestRow = {
+/**
+ * Applies one call of the app's task-list tool (`mcp__ccd_turn__update_plan`):
+ * `items` replaces the list, `advance` completes the step in progress and
+ * starts the next, `done`/`start` name steps by their 1-based place.
+ */
+export function applyPlan(plan: PlanItem[], a: Record<string, unknown>): PlanItem[] {
+  let next = plan
+  if (Array.isArray(a.items)) {
+    next = (a.items as Record<string, unknown>[])
+      .map(x => ({ text: clip(str(x.content), 120), status: status(x.status) }))
+      .filter(x => x.text)
+  }
+  if (a.advance === true) {
+    const i = next.findIndex(x => x.status === 'in_progress')
+    const j = next.findIndex((x, k) => k > i && x.status === 'pending')
+    next = next.map((x, k) => (k === i ? { ...x, status: 'completed' } : k === j ? { ...x, status: 'in_progress' } : x))
+  }
+  if (Array.isArray(a.done)) {
+    const done = new Set((a.done as unknown[]).map(Number))
+    next = next.map((x, k) => (done.has(k + 1) ? { ...x, status: 'completed' } : x))
+  }
+  if (typeof a.start === 'number') {
+    const at = a.start - 1
+    next = next.map((x, k) => (k === at ? { ...x, status: 'in_progress' } : x.status === 'in_progress' ? { ...x, status: 'pending' } : x))
+  }
+  return next
+}
+
+function status(v: unknown): PlanItem['status'] {
+  return v === 'completed' || v === 'in_progress' ? v : 'pending'
+}
+
+/** Where the task list stands: the step in progress and how far along it is. */
+export function planPlace(plan: PlanItem[]): { done: number; total: number; current: PlanItem | null; index: number } {
+  const index = plan.findIndex(x => x.status === 'in_progress')
+  return {
+    done: plan.filter(x => x.status === 'completed').length,
+    total: plan.length,
+    current: index >= 0 ? (plan[index] ?? null) : null,
+    index,
+  }
+}
+
+// ---------------------------------------------------------------- requests as stories
+
+/** Something a request left behind, drawn as a chip under it. */
+export type Chip = { label: string; href: string | null; tone: 'done' | 'warn' | 'plain'; run?: string | null }
+
+export type Story = {
   n: number
   text: string
   at: number
   ms: number | null
-  counts: Partial<Record<Kind, number>>
   isNow: boolean
+  end: TurnEnd | null
+  recap: string
+  ask: string
+  /** The request's work in plain words: "4 edits · 6 commands". */
+  work: string
+  /** Steps by kind, for the timeline's icons. */
+  counts: Partial<Record<Kind, number>>
+  /** Commits made during the request, and how many of them are not pushed. */
+  commits: number
+  unpushed: number
+  chips: Chip[]
+  /** The newest steps of this request, newest last. */
+  recent: Step[]
 }
 
-export function requestRows(l: Ledger, now: number): RequestRow[] {
-  return l.turns.map((t, i) => {
-    const counts: Partial<Record<Kind, number>> = {}
-    for (const s of l.steps) if (s.turn === t.n) counts[s.kind] = (counts[s.kind] ?? 0) + 1
-    const isNow = i === l.turns.length - 1 && l.isWorking
-    return { n: t.n, text: t.text, at: t.at, ms: t.endedAt ? t.endedAt - t.at : isNow ? now - t.at : null, counts, isNow }
-  })
+const WORK_WORDS: [Kind, string, string][] = [
+  ['edit', 'edit', 'edits'],
+  ['run', 'command', 'commands'],
+  ['read', 'lookup', 'lookups'],
+  ['web', 'web or screen step', 'web or screen steps'],
+  ['agent', 'helper', 'helpers'],
+]
+
+export function workWords(steps: Step[]): string {
+  const counts: Partial<Record<Kind, number>> = {}
+  for (const s of steps) counts[s.kind] = (counts[s.kind] ?? 0) + 1
+  return WORK_WORDS.filter(([k]) => counts[k])
+    .map(([k, one, many]) => `${counts[k]} ${counts[k] === 1 ? one : many}`)
+    .join(' · ')
+}
+
+/**
+ * True for a prompt the app or a tool sent rather than Tristan: a background
+ * task's notice, a CI event, an app command. Its work belongs to the request
+ * before it.
+ */
+export function isAutomated(text: string): boolean {
+  const m = /^<([a-z][\w-]*)[\s>]/.exec(promptText(text))
+  return Boolean(m && m[1] !== 'pasted_content')
+}
+
+/**
+ * Each request, newest first: what was asked, how long Claude worked on it,
+ * what it did and what it left behind. Automated prompts fold into the
+ * request before them, and the time counts only while Claude was working.
+ */
+export function stories(l: Ledger, now: number): Story[] {
+  const groups: Turn[][] = []
+  for (const t of l.turns) {
+    const last = groups[groups.length - 1]
+    if ((t.auto ?? isAutomated(t.text)) && last) last.push(t)
+    else groups.push([t])
+  }
+  return groups
+    .map((g, gi) => {
+      const head = g[0] as Turn
+      const tail = g[g.length - 1] as Turn
+      const isNow = gi === groups.length - 1 && l.isWorking
+      const ns = new Set(g.map(t => t.n))
+      const steps = l.steps.filter(s => ns.has(s.turn) && s.agent === null)
+      const from = head.at
+      const to = (tail.endedAt ?? now) + 60_000
+      const inWindow = (at: number) => at >= from && at <= to
+      let ms = 0
+      for (const t of g) ms += t.workMs ?? (t.endedAt ? t.endedAt - t.at : 0)
+      if (isNow) ms += now - (l.startedAt ?? tail.at)
+      const chips: Chip[] = []
+      let commits = 0
+      let unpushed = 0
+      for (const r of l.repos) {
+        const made = r.commits.filter(c => inWindow(c.at * 1000))
+        if (!made.length) continue
+        const isPushed = r.hasUpstream && r.ahead === 0
+        commits += made.length
+        if (!isPushed) unpushed += made.length
+        chips.push({
+          label: `${made.length} commit${made.length === 1 ? '' : 's'} in ${r.name}${isPushed ? ', pushed' : ''}`,
+          href: null,
+          tone: isPushed ? 'done' : 'warn',
+        })
+      }
+      for (const r of l.results.filter(x => inWindow(x.at)).slice(-4)) {
+        chips.push({ label: `${RESULT_WORD[r.kind] ?? ''}${r.title}`, href: r.href, tone: 'plain', run: r.run })
+      }
+      const counts: Partial<Record<Kind, number>> = {}
+      for (const s of steps) counts[s.kind] = (counts[s.kind] ?? 0) + 1
+      const recap = [...g].reverse().find(t => t.recap)?.recap ?? ''
+      return {
+        n: head.n,
+        text: promptText(head.text) || 'Your first message',
+        at: head.at,
+        ms: ms > 0 || isNow ? ms : null,
+        isNow,
+        end: tail.end ?? null,
+        recap,
+        ask: tail.ask ?? '',
+        work: workWords(steps),
+        counts,
+        commits,
+        unpushed,
+        chips,
+        recent: steps.slice(-4),
+      }
+    })
+    .reverse()
+}
+
+const RESULT_WORD: Record<string, string> = { artifact: 'Page: ', pr: '', repo: '', script: 'Script: ', doc: 'File: ', push: '' }
+
+// ---------------------------------------------------------------- changes by project
+
+export type Group = {
+  key: string
+  name: string
+  branch: string
+  /** One sentence on where the project's changes stand. */
+  status: string
+  tone: 'done' | 'warn' | 'plain'
+  /** Files Claude changed through its own tools, newest first. */
+  files: FileRow[]
+  /** Files that changed by shell commands, counted, not listed. */
+  byCommands: FileRow[]
+  added: number
+  removed: number
+}
+
+/** The session's changes rolled up per project, busiest first; untouched projects are left out. */
+export function changeGroups(l: Ledger): Group[] {
+  // Real edits only: everything Claude changed through its own tools, and what
+  // commands changed only where git counts changed lines (that leaves out the
+  // engine's own bookkeeping: file-history snapshots, state, copies).
+  const rows = fileRows(l).filter(r => r.state !== 'read' && r.state !== 'reading' && (!r.isShell || r.added + r.removed > 0 || r.isDeleted))
+  const byKey: Record<string, FileRow[]> = {}
+  for (const r of rows) (byKey[r.repo ? r.repo.root : r.project] ??= []).push(r)
+  for (const r of l.repos) if (r.commits.length) byKey[r.root] ??= []
+
+  return Object.entries(byKey)
+    .map(([key, list]) => {
+      const repo = l.repos.find(r => r.root === key) ?? null
+      const files = list.filter(r => !r.isShell)
+      const byCommands = list.filter(r => r.isShell)
+      const open = list.filter(r => r.state === 'new' || r.state === 'uncommitted' || r.state === 'editing').length
+      let status = ''
+      let tone: Group['tone'] = 'plain'
+      if (repo) {
+        const made = repo.commits.length
+        if (open) {
+          status = `${open} file${open === 1 ? '' : 's'} not committed`
+          tone = 'warn'
+        } else if (made && repo.hasUpstream && repo.ahead === 0) {
+          status = `${made} commit${made === 1 ? '' : 's'}, all pushed`
+          tone = 'done'
+        } else if (made || repo.ahead) {
+          const n = repo.ahead || made
+          status = repo.hasUpstream ? `${n} commit${n === 1 ? '' : 's'} not pushed` : `${made} commit${made === 1 ? '' : 's'}, no remote`
+          tone = 'warn'
+        } else {
+          status = list.length ? 'Changes committed' : 'No changes'
+          tone = list.length ? 'done' : 'plain'
+        }
+      } else {
+        status = `${list.length} file${list.length === 1 ? '' : 's'} changed`
+      }
+      return {
+        key,
+        name: repo ? repo.name : key,
+        branch: repo ? repo.branch : '',
+        status,
+        tone,
+        files,
+        byCommands,
+        added: list.reduce((n, r) => n + r.added, 0),
+        removed: list.reduce((n, r) => n + r.removed, 0),
+        at: Math.max(0, ...list.map(r => r.at), ...(repo?.commits.map(c => c.at * 1000) ?? [])),
+      }
+    })
+    .sort((a, b) => b.at - a.at)
+    .map(({ at: _at, ...g }) => g)
 }
 
 // ---------------------------------------------------------------- small helpers
+
+/**
+ * What the person typed, without the context the app wraps around a prompt
+ * (system reminders, pasted-content tags). A reminder cut off by an earlier
+ * clip has no closing tag, so an open one runs to the end.
+ */
+export function promptText(s: string): string {
+  return s
+    .replace(/<(system-reminder|ide_[a-z_]+|local-command-[a-z]+|command-[a-z]+)\b[^>]*>[\s\S]*?(<\/\1>|$)/g, ' ')
+    .replace(/<\/?pasted_content[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
 
 export function str(v: unknown): string {
   return typeof v === 'string' ? v : ''
@@ -394,4 +638,38 @@ export function short(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M`
   if (n >= 1000) return `${Math.round(n / 1000)}k`
   return String(n)
+}
+
+/** One row of a diff as the pane draws it: what kind of line, its number in the file, its text. */
+export type DiffRow = { kind: 'add' | 'del' | 'ctx' | 'gap'; num: number | null; text: string }
+
+/**
+ * A unified diff as editor-style rows: added and removed lines with the line number they have
+ * in the new or old file, unchanged context between, and a gap row where a hunk skips ahead.
+ * The `---`/`+++` header and `\ No newline` markers are left out.
+ */
+export function diffRows(diff: string): DiffRow[] {
+  const rows: DiffRow[] = []
+  let oldN = 0
+  let newN = 0
+  let seenHunk = false
+  for (const line of diff.split('\n')) {
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
+    if (hunk) {
+      if (seenHunk) rows.push({ kind: 'gap', num: null, text: '' })
+      seenHunk = true
+      oldN = Number(hunk[1])
+      newN = Number(hunk[2])
+      continue
+    }
+    if (!seenHunk || line.startsWith('\\')) continue
+    if (line.startsWith('+')) rows.push({ kind: 'add', num: newN++, text: line.slice(1) })
+    else if (line.startsWith('-')) rows.push({ kind: 'del', num: oldN++, text: line.slice(1) })
+    else if (line.startsWith(' ')) {
+      rows.push({ kind: 'ctx', num: newN, text: line.slice(1) })
+      oldN++
+      newN++
+    }
+  }
+  return rows
 }
