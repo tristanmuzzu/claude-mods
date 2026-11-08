@@ -495,7 +495,7 @@ function fileLine($: EngineInterface, r: FileRow, v: View, el: Els) {
         ) : null}
         {r.isDeleted ? null : (
           // A Button holds text alone (a drawn icon cannot take the press), so the edit icon is a glyph.
-          <Button key={`edit:${r.path}`} plain onPress={() => openInEditor($, r.path)}>
+          <Button key={`edit:${r.path}`} plain dimColor onPress={() => openInEditor($, r.path)}>
             <Text color={wasOpened ? DONE : '#9fbfff'}>{wasOpened ? '✓' : '✎'}</Text>
           </Button>
         )}
@@ -742,7 +742,7 @@ async function openFile($: EngineInterface, r: FileRow) {
   await update($, view, x => ({ ...x, openPath: r.path, openDiff: null }))
   if (r.repo && r.state !== 'read') {
     const rel = r.path.slice(r.repo.root.length + 1)
-    const diff = await diffOf($, r.repo.root, rel, r.state === 'new').catch(() => '')
+    const diff = await diffOf($, r.repo.root, rel, r.state === 'new', r.repo.headAtStart).catch(() => '')
     if (diff) await update($, view, x => (x.openPath === r.path ? { ...x, openDiff: diff } : x))
   }
 }

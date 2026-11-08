@@ -214,6 +214,21 @@ test('shell changes are grouped under their project', () => {
   expect([g?.name, g?.status, g?.files.length, g?.byCommands.length]).toEqual(['claude-mods', '1 file not committed', 0, 1])
 })
 
+test('committed files keep their line counts since the session started', () => {
+  const rows = fileRows({
+    ...EMPTY,
+    touches: [{ path: `${PROJECT}/a.ts`, reads: 0, edits: 1, added: 999, removed: 999, isNew: false, at: 1, diff: '' }],
+    repos: [
+      {
+        root: PROJECT, name: 'claude-mods', branch: 'main', hasUpstream: true, ahead: 0, behind: 0, headAtStart: 'a', baseline: [],
+        files: [], changed: [{ rel: 'a.ts', code: 'M', added: 12, removed: 3 }, { rel: 'b.ts', code: 'M', added: 4, removed: 0 }],
+        commits: [{ sha: 'c', subject: 's', at: 2 }], scannedAt: 1,
+      },
+    ],
+  })
+  expect(rows.map(r => [r.name, r.state, r.added, r.removed])).toEqual([['a.ts', 'pushed', 12, 3], ['b.ts', 'pushed', 4, 0]])
+})
+
 test('a pushed commit shows as a chip on the request that made it', () => {
   const at = 1_700_000_000_000
   const l = {

@@ -39,6 +39,9 @@ export async function scan($: EngineInterface, root: string, was: Repo | null, n
   const head = ((await git($, root, ['rev-parse', 'HEAD'])) ?? '').trim()
   const headAtStart = was?.headAtStart ?? head
   const parsed = parseStatus(status, numstat)
+  // Line counts since the session started: what was committed since counts too.
+  const sinceStat = headAtStart && head && head !== headAtStart ? ((await git($, root, ['diff', '--numstat', headAtStart])) ?? '') : numstat
+  const changed = parseNumstat(sinceStat)
   let commits: Commit[] = []
   if (headAtStart && head && head !== headAtStart) {
     const log = await git($, root, ['log', '--format=%h%x09%ct%x09%s', '-n', '30', `${headAtStart}..HEAD`])
@@ -54,16 +57,17 @@ export async function scan($: EngineInterface, root: string, was: Repo | null, n
     headAtStart,
     baseline: was ? was.baseline : parsed.files.map(f => f.rel),
     files: parsed.files,
+    changed,
     commits,
     scannedAt: now,
   }
 }
 
 /** The file's change against HEAD as a unified diff, cut to a readable length. */
-export async function diffOf($: EngineInterface, root: string, rel: string, isNew: boolean): Promise<string> {
+export async function diffOf($: EngineInterface, root: string, rel: string, isNew: boolean, base = 'HEAD'): Promise<string> {
   const out = isNew
     ? await gitAny($, root, ['diff', '--no-index', '--', '/dev/null', rel])
-    : await git($, root, ['diff', 'HEAD', '--', rel])
+    : await git($, root, ['diff', base || 'HEAD', '--', rel])
   return cutDiff(out ?? '')
 }
 
@@ -118,6 +122,16 @@ export function parseStatus(status: string, numstat: string) {
     return { rel, code, added: counts[rel]?.added ?? 0, removed: counts[rel]?.removed ?? 0 }
   })
   return { branch, hasUpstream, ahead, behind, files: files.slice(0, 400) }
+}
+
+/** `git diff --numstat` lines as files with their counts (binary files count 0). */
+export function parseNumstat(numstat: string): RepoFile[] {
+  return numstat
+    .split('\n')
+    .map(line => line.split('\t'))
+    .filter(p => p.length >= 3 && p[2])
+    .map(([a, r, ...rest]) => ({ rel: rest.join('\t'), code: 'M', added: Number(a) || 0, removed: Number(r) || 0 }))
+    .slice(0, 400)
 }
 
 export function parseLog(log: string): Commit[] {

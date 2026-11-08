@@ -285,6 +285,7 @@ export function fileRows(l: Ledger): FileRow[] {
     const rel = repo ? path.slice(repo.root.length + 1) : place(path).rel
     const cut = rel.lastIndexOf('/')
     const git = repo?.files.find(f => f.rel === rel) ?? null
+    const since = repo?.changed?.find(f => f.rel === rel) ?? null
     const wasDirty = repo?.baseline.includes(rel) ?? false
     let state: FileState
     let added = t?.added ?? 0
@@ -296,6 +297,8 @@ export function fileRows(l: Ledger): FileRow[] {
         added = git.added
         removed = git.removed
       }
+    } else if (repo && since && !wasDirty) {
+      state = repo.hasUpstream && repo.ahead === 0 ? 'pushed' : 'committed'
     } else if (repo && (t?.edits ?? 0) > 0) {
       state = repo.commits.some(c => c.at * 1000 >= (t?.at ?? 0) - 120_000) || repo.commits.length > 0
         ? repo.hasUpstream && repo.ahead === 0
@@ -304,6 +307,11 @@ export function fileRows(l: Ledger): FileRow[] {
         : 'changed'
     } else if ((t?.edits ?? 0) > 0) state = t?.isNew ? 'new' : 'changed'
     else state = 'read'
+    // Counted since the session started, as git sees it, wherever git has the file.
+    if (since && !wasDirty) {
+      added = since.added
+      removed = since.removed
+    }
     return {
       path,
       name: cut >= 0 ? rel.slice(cut + 1) : rel,
@@ -323,7 +331,7 @@ export function fileRows(l: Ledger): FileRow[] {
   for (const t of l.touches) rows[t.path] = make(t.path, t.at, false, t)
   for (const x of l.live) if (x.path && !rows[x.path]) rows[x.path] = make(x.path, x.at, false, null)
   for (const r of l.repos) {
-    for (const f of r.files) {
+    for (const f of [...r.files, ...(r.changed ?? [])]) {
       if (r.baseline.includes(f.rel)) continue
       const path = `${r.root}/${f.rel}`
       if (!rows[path]) rows[path] = make(path, r.scannedAt, true, null)

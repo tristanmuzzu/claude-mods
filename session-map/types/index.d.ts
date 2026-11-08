@@ -71,6 +71,8 @@ export type Repo = {
   /** Files already dirty when the map first looked: not this session's work. */
   baseline: string[]
   files: RepoFile[]
+  /** Every tracked file changed since the map started, committed or not, with its line counts. */
+  changed?: RepoFile[]
   commits: Commit[]
   scannedAt: number
 }
