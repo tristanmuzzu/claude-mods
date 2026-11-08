@@ -1,7 +1,7 @@
 {
   "name": "session-map",
-  "version": "0.2.0",
-  "description": "An all-in-one side pane: what Claude is doing right now, context and plan limits, the files it touched with their git state, what it shipped, and your requests.",
+  "version": "0.3.0",
+  "description": "A calm side pane: what Claude is doing right now and where its task list stands, each request told as what you asked and what came of it, and where each project's changes stand in git.",
   "license": "MIT",
   "types": "./types/index.d.ts"
 }

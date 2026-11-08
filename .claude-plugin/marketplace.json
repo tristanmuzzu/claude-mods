@@ -17,7 +17,7 @@
     {
       "name": "session-map",
       "source": "./session-map",
-      "description": "One pane for everything worth watching: what Claude is doing right now, context and plan limits, an activity ribbon, touched files with their git state, what shipped, your requests and the project tree."
+      "description": "A calm side pane: what Claude is doing right now and where its task list stands, each request told as what you asked and what came of it, and where each project's changes stand in git."
     }
   ]
 }

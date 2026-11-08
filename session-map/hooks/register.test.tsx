@@ -1,9 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 
-import { glyph, ribbon, rings } from './art'
+import { glyph, mark, track } from './art'
 import { cutDiff, parseLog, parseStatus } from './git'
-import { fileRows, place } from './model'
-import { EMPTY } from './model'
+import { applyPlan, changeGroups, EMPTY, fileRows, place, stories } from './model'
 
 const PANE = {
   plugin: 'session-map',
@@ -12,7 +11,7 @@ const PANE = {
   props: {
     title: 'Session map',
     isFocused: false,
-    bodyColumns: 60,
+    bodyColumns: 40,
     placement: 'dock',
     scroll: { offset: 0, bodyRows: 80 },
     view: {},
@@ -20,6 +19,8 @@ const PANE = {
 } as const
 
 const PROJECT = '/home/tristan/projects/claude-mods'
+const PLAN = 'mcp__ccd_turn__update_plan'
+const WRAP = 'mcp__ccd_turn__wrap_up'
 
 // Nothing sits beneath the plugin: these hooks stand for the engine.
 function engine(on: any) {
@@ -28,44 +29,105 @@ function engine(on: any) {
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('prompt.submit', (_: unknown, e: any) => ({ text: e.text }))
   on('session.start', (_: unknown, e: any) => ({ cwd: e.cwd }))
+  on('turn.start', (_: unknown, e: any) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('clock.every', () => ({ value: { cancel: () => undefined } }))
+  on('clock.after', () => ({ value: { cancel: () => undefined } }))
   on('tool.call', (_: unknown, e: any) => {
     if (e.tool === 'Write') return { result: {}, text: `File created successfully at: ${e.file_path}` }
     return { result: {}, text: 'ok' }
   })
 }
 
-test('the pane shows what happened: the glyph card, touched files, requests', async ($, on) => {
+const texts = async (ui: any) => (await ui.findAll({ type: 'Text' })).map((t: any) => t.text as string) as string[]
+
+test('the pane tells the request as a story and rolls changes up by project', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await $.prompt.submit({ text: 'Make the sidebar better' } as any)
+  await ($ as any).turn.start({ text: 'Make the sidebar better', turnId: 'main-1' })
   await $.tool.call({ tool: 'Read', file_path: `${PROJECT}/README.md` })
   await $.tool.call({ tool: 'Edit', file_path: `${PROJECT}/a.ts`, old_string: 'one\ntwo\n', new_string: 'one\n2\n3\n' })
   await $.tool.call({ tool: 'Write', file_path: `${PROJECT}/run.sh`, content: 'echo hi\n' })
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect((await ui.find({ type: 'Text', text: /^Claude touched/ }))?.text).toBe('Claude touched   2 changed · 1 read')
-    expect((await ui.find({ type: 'Button', key: `open:${PROJECT}/a.ts` }))?.text).toContain('a.ts')
-    expect((await ui.find({ type: 'Text', text: /^Your requests/ }))?.text).toBe('Your requests   1')
-    expect((await ui.find({ type: 'Text', text: /Make the sidebar better/ }))).toBeTruthy()
-    expect((await ui.find({ type: 'Button', key: 'copy:run.sh' }))).toBeTruthy()
+    const all = await texts(ui)
+    expect(all.some(t => t === 'This chat')).toBe(true)
+    expect(all.some(t => /Make the sidebar better/.test(t))).toBe(true)
+    expect(all.some(t => /2 edits · 1 lookup/.test(t))).toBe(true)
+    // The pane no longer lists every file up front: one line per project.
+    expect(await ui.find({ type: 'Button', key: `open:${PROJECT}/a.ts` })).toBeFalsy()
+    expect((await ui.find({ type: 'Button', key: 'group-btn:claude-mods' }))?.text).toContain('claude-mods')
     await ui.unmount()
   }
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect((await ui.findAll({ type: 'Svg' })).length).toBeGreaterThan(2)
+  await ui.press({ key: 'group-btn:claude-mods' })
+  await ui.press({ key: `open:${PROJECT}/a.ts` })
+  const code = await ui.find({ type: 'Code' })
+  expect(code?.text).toContain('-two')
+  expect(code?.text).toContain('+3')
+  expect(await ui.find({ type: 'Button', key: 'copy:Script: run.sh' })).toBeTruthy()
   await ui.unmount()
 })
 
-test('pressing a changed file shows its last edit as a diff', async ($, on) => {
+test('the task list shows as a track with the step in progress', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  await $.tool.call({ tool: 'Edit', file_path: `${PROJECT}/b.md`, old_string: 'alpha\nbeta\n', new_string: 'alpha\ngamma\n' })
+  await $.prompt.submit({ text: 'Redesign it' } as any)
+  await ($ as any).turn.start({ text: 'Redesign it', turnId: 'main-1' })
+  await $.tool.call({
+    tool: PLAN,
+    items: [
+      { content: 'Look around', status: 'in_progress' },
+      { content: 'Rebuild the pane', status: 'pending' },
+      { content: 'Verify it', status: 'pending' },
+    ],
+  } as any)
+  await $.tool.call({ tool: PLAN, advance: true } as any)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await ui.press({ key: `open:${PROJECT}/b.md` })
-  const code = await ui.find({ type: 'Code' })
-  expect(code?.text).toContain('-beta')
-  expect(code?.text).toContain('+gamma')
+  const all = await texts(ui)
+  expect(all.some(t => /Step 2 of 3/.test(t) && /Rebuild the pane/.test(t))).toBe(true)
+  // Nothing runs: the headline names the step being worked on.
+  expect(all.some(t => /^Thinking/.test(t))).toBe(true)
+  await ui.unmount()
+})
+
+test('a finished request leads with its own recap, and an ask turns into Your call', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'Fix it' } as any)
+  await ($ as any).turn.start({ text: 'Fix it', turnId: 'main-1' })
+  await $.tool.call({ tool: WRAP, recap: 'The proxy now starts Blender on demand. Nothing is committed yet.' } as any)
+  await ($ as any).turn.complete({ answer: '', durationMs: 1000, isAborted: false, turnId: 'main-1', reason: 'answer' })
+  let ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  let all = await texts(ui)
+  expect(all.some(t => t === 'The proxy now starts Blender on demand.')).toBe(true)
+  expect(all.some(t => /^Done/.test(t))).toBe(true)
+  await ui.unmount()
+
+  await $.prompt.submit({ text: 'Ship it' } as any)
+  await ($ as any).turn.start({ text: 'Ship it', turnId: 'main-2' })
+  await $.tool.call({ tool: WRAP, recap: 'Ready to push.', ask: 'Push to main?' } as any)
+  await ($ as any).turn.complete({ answer: '', durationMs: 1000, isAborted: false, turnId: 'main-2', reason: 'answer' })
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  all = await texts(ui)
+  expect(all.some(t => t === 'Your call')).toBe(true)
+  expect(all.some(t => t === 'Push to main?')).toBe(true)
+  await ui.unmount()
+})
+
+test('a nested turn ending does not end the work in progress', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'Run the build' } as any)
+  await ($ as any).turn.start({ text: 'Run the build', turnId: 'main-1' })
+  await ($ as any).turn.complete({ answer: '', durationMs: 5, isAborted: false, turnId: 'side-query', reason: 'answer' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const all = await texts(ui)
+  expect(all.some(t => /^Thinking/.test(t))).toBe(true)
+  expect(all.some(t => /^Done/.test(t))).toBe(false)
   await ui.unmount()
 })
 
@@ -73,8 +135,16 @@ test('an empty session says it is ready', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect((await ui.find({ type: 'Text', text: /Waiting for your first request/ }))).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Waiting for your first request/ })).toBeTruthy()
   await ui.unmount()
+})
+
+test('task list calls move the steps the way the app does', () => {
+  let p = applyPlan([], { items: [{ content: 'a', status: 'in_progress' }, { content: 'b', status: 'pending' }, { content: 'c', status: 'pending' }] })
+  p = applyPlan(p, { advance: true })
+  expect(p.map(x => x.status)).toEqual(['completed', 'in_progress', 'pending'])
+  p = applyPlan(p, { done: [2], start: 3 })
+  expect(p.map(x => x.status)).toEqual(['completed', 'completed', 'in_progress'])
 })
 
 test('git status, numstat and log are read', () => {
@@ -93,8 +163,8 @@ test('git status, numstat and log are read', () => {
   expect(cutDiff('diff --git a/x b/x\nindex 1..2\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n')).toBe('--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b')
 })
 
-test('a file git reports as changed, but no tool touched, shows as a shell change', () => {
-  const rows = fileRows({
+test('shell changes are counted under their project, not listed one by one', () => {
+  const l = {
     ...EMPTY,
     repos: [
       {
@@ -114,17 +184,44 @@ test('a file git reports as changed, but no tool touched, shows as a shell chang
         scannedAt: 1,
       },
     ],
-  })
-  expect(rows.map(r => [r.name, r.state, r.isShell, r.added, r.removed])).toEqual([['y.ts', 'uncommitted', true, 5, 2]])
+  }
+  expect(fileRows(l).map(r => [r.name, r.state, r.isShell, r.added, r.removed])).toEqual([['y.ts', 'uncommitted', true, 5, 2]])
+  const [g] = changeGroups(l)
+  expect([g?.name, g?.status, g?.files.length, g?.byCommands.length]).toEqual(['claude-mods', '1 file not committed', 0, 1])
+})
+
+test('a pushed commit shows as a chip on the request that made it', () => {
+  const at = 1_700_000_000_000
+  const l = {
+    ...EMPTY,
+    turns: [{ n: 1, text: 'Ship', at, endedAt: at + 60_000 }],
+    repos: [
+      {
+        root: PROJECT,
+        name: 'claude-mods',
+        branch: 'main',
+        hasUpstream: true,
+        ahead: 0,
+        behind: 0,
+        headAtStart: 'a',
+        baseline: [],
+        files: [],
+        commits: [{ sha: 'b', subject: 'ship', at: at / 1000 + 30 }],
+        scannedAt: 1,
+      },
+    ],
+  }
+  expect(stories(l, at + 90_000)[0]?.chips).toEqual([{ label: '1 commit in claude-mods, pushed', href: null, tone: 'done' }])
+  expect(changeGroups(l)[0]?.status).toBe('1 commit, all pushed')
 })
 
 test('drawings are well-formed SVG', () => {
-  for (const m of ['read', 'edit', 'run', 'web', 'agent', 'publish', 'thinking', 'done', 'ready'] as const) {
+  for (const m of ['read', 'edit', 'run', 'web', 'agent', 'publish', 'thinking', 'done', 'ready', 'waiting', 'stopped'] as const) {
     expect(glyph(m, true)).toMatch(/^<svg[\s\S]*<\/svg>$/)
   }
-  expect(rings({ tokens: 134_000, compactAt: 400_000, isCompactPoint: true, limits: [{ kind: 'five_hour', percentUsed: 23, resetsAt: null }] }, 300)).toContain('34%')
-  const r = ribbon([{ kind: 'edit', at: 0, ms: 900, turn: 1, label: 'Editing <a>', agent: null }], [{ n: 1, text: 'hi', at: 0, endedAt: null }], true, 300)
-  expect(r).toContain('Editing &lt;a&gt;')
+  for (const m of ['live', 'done', 'ask', 'stopped', 'quiet'] as const) expect(mark(m)).toMatch(/^<svg[\s\S]*<\/svg>$/)
+  const t = track([{ text: 'a', status: 'completed' }, { text: 'b', status: 'in_progress' }, { text: 'c', status: 'pending' }], 300, '#fff')
+  expect((t.match(/<rect/g) ?? []).length).toBe(3)
 })
 
 test('paths are grouped by the place Tristan knows them by', () => {

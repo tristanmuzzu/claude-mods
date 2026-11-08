@@ -59,13 +59,6 @@ export async function scan($: EngineInterface, root: string, was: Repo | null, n
   }
 }
 
-/** Every file git knows in the repository, tracked or new, ignored ones left out. */
-export async function listFiles($: EngineInterface, root: string): Promise<string[]> {
-  const out = await git($, root, ['ls-files', '--cached', '--others', '--exclude-standard'])
-  if (!out) return []
-  return [...new Set(out.split('\n').filter(Boolean))].slice(0, 5000)
-}
-
 /** The file's change against HEAD as a unified diff, cut to a readable length. */
 export async function diffOf($: EngineInterface, root: string, rel: string, isNew: boolean): Promise<string> {
   const out = isNew

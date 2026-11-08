@@ -1,7 +1,7 @@
 // Pure functions: reading tool calls into the ledger, and the view model the
 // pane draws from. Nothing here touches `$`, so all of it is testable alone.
 
-import type { Kind, Ledger, Live, Repo, Result, Step, Touch } from '../types'
+import type { Kind, Ledger, Live, PlanItem, Repo, Result, Step, Touch, TurnEnd } from '../types'
 
 export const EMPTY: Ledger = {
   steps: [],
@@ -15,6 +15,10 @@ export const EMPTY: Ledger = {
   vitals: null,
   cwd: '',
   model: '',
+  plan: [],
+  planTurn: 0,
+  asking: null,
+  mainTurn: null,
 }
 
 /** Housekeeping calls that say nothing about the work itself. */
@@ -326,24 +330,196 @@ export function fileRows(l: Ledger): FileRow[] {
   return Object.values(rows).sort((a, b) => rank[a.state] - rank[b.state] || b.at - a.at)
 }
 
-// ---------------------------------------------------------------- requests
+// ---------------------------------------------------------------- the task list
 
-export type RequestRow = {
+/**
+ * Applies one call of the app's task-list tool (`mcp__ccd_turn__update_plan`):
+ * `items` replaces the list, `advance` completes the step in progress and
+ * starts the next, `done`/`start` name steps by their 1-based place.
+ */
+export function applyPlan(plan: PlanItem[], a: Record<string, unknown>): PlanItem[] {
+  let next = plan
+  if (Array.isArray(a.items)) {
+    next = (a.items as Record<string, unknown>[])
+      .map(x => ({ text: clip(str(x.content), 120), status: status(x.status) }))
+      .filter(x => x.text)
+  }
+  if (a.advance === true) {
+    const i = next.findIndex(x => x.status === 'in_progress')
+    const j = next.findIndex((x, k) => k > i && x.status === 'pending')
+    next = next.map((x, k) => (k === i ? { ...x, status: 'completed' } : k === j ? { ...x, status: 'in_progress' } : x))
+  }
+  if (Array.isArray(a.done)) {
+    const done = new Set((a.done as unknown[]).map(Number))
+    next = next.map((x, k) => (done.has(k + 1) ? { ...x, status: 'completed' } : x))
+  }
+  if (typeof a.start === 'number') {
+    const at = a.start - 1
+    next = next.map((x, k) => (k === at ? { ...x, status: 'in_progress' } : x.status === 'in_progress' ? { ...x, status: 'pending' } : x))
+  }
+  return next
+}
+
+function status(v: unknown): PlanItem['status'] {
+  return v === 'completed' || v === 'in_progress' ? v : 'pending'
+}
+
+/** Where the task list stands: the step in progress and how far along it is. */
+export function planPlace(plan: PlanItem[]): { done: number; total: number; current: PlanItem | null; index: number } {
+  const index = plan.findIndex(x => x.status === 'in_progress')
+  return {
+    done: plan.filter(x => x.status === 'completed').length,
+    total: plan.length,
+    current: index >= 0 ? (plan[index] ?? null) : null,
+    index,
+  }
+}
+
+// ---------------------------------------------------------------- requests as stories
+
+/** Something a request left behind, drawn as a chip under it. */
+export type Chip = { label: string; href: string | null; tone: 'done' | 'warn' | 'plain'; run?: string | null }
+
+export type Story = {
   n: number
   text: string
   at: number
   ms: number | null
-  counts: Partial<Record<Kind, number>>
   isNow: boolean
+  end: TurnEnd | null
+  recap: string
+  ask: string
+  /** The request's work in plain words: "4 edits · 6 commands". */
+  work: string
+  chips: Chip[]
+  /** The newest steps of this request, newest last. */
+  recent: Step[]
 }
 
-export function requestRows(l: Ledger, now: number): RequestRow[] {
-  return l.turns.map((t, i) => {
-    const counts: Partial<Record<Kind, number>> = {}
-    for (const s of l.steps) if (s.turn === t.n) counts[s.kind] = (counts[s.kind] ?? 0) + 1
-    const isNow = i === l.turns.length - 1 && l.isWorking
-    return { n: t.n, text: t.text, at: t.at, ms: t.endedAt ? t.endedAt - t.at : isNow ? now - t.at : null, counts, isNow }
-  })
+const WORK_WORDS: [Kind, string, string][] = [
+  ['edit', 'edit', 'edits'],
+  ['run', 'command', 'commands'],
+  ['read', 'lookup', 'lookups'],
+  ['web', 'web or screen step', 'web or screen steps'],
+  ['agent', 'helper', 'helpers'],
+]
+
+export function workWords(steps: Step[]): string {
+  const counts: Partial<Record<Kind, number>> = {}
+  for (const s of steps) counts[s.kind] = (counts[s.kind] ?? 0) + 1
+  return WORK_WORDS.filter(([k]) => counts[k])
+    .map(([k, one, many]) => `${counts[k]} ${counts[k] === 1 ? one : many}`)
+    .join(' · ')
+}
+
+/** Each request, newest first, told as what was asked, what it did and what it left behind. */
+export function stories(l: Ledger, now: number): Story[] {
+  return l.turns
+    .map((t, i) => {
+      const isNow = i === l.turns.length - 1 && l.isWorking
+      const steps = l.steps.filter(s => s.turn === t.n && s.agent === null)
+      const from = t.at
+      const to = (t.endedAt ?? now) + 60_000
+      const inWindow = (at: number) => at >= from && at <= to
+      const chips: Chip[] = []
+      for (const r of l.repos) {
+        const made = r.commits.filter(c => inWindow(c.at * 1000))
+        if (!made.length) continue
+        const isPushed = r.hasUpstream && r.ahead === 0
+        chips.push({
+          label: `${made.length} commit${made.length === 1 ? '' : 's'} in ${r.name}${isPushed ? ', pushed' : ''}`,
+          href: null,
+          tone: isPushed ? 'done' : 'warn',
+        })
+      }
+      for (const r of l.results.filter(x => inWindow(x.at)).slice(-4)) {
+        chips.push({ label: `${RESULT_WORD[r.kind] ?? ''}${r.title}`, href: r.href, tone: 'plain', run: r.run })
+      }
+      return {
+        n: t.n,
+        text: t.text,
+        at: t.at,
+        ms: t.endedAt ? t.endedAt - t.at : isNow ? now - t.at : null,
+        isNow,
+        end: t.end ?? null,
+        recap: t.recap ?? '',
+        ask: t.ask ?? '',
+        work: workWords(steps),
+        chips,
+        recent: steps.slice(-4),
+      }
+    })
+    .reverse()
+}
+
+const RESULT_WORD: Record<string, string> = { artifact: 'Page: ', pr: '', repo: '', script: 'Script: ', doc: 'File: ', push: '' }
+
+// ---------------------------------------------------------------- changes by project
+
+export type Group = {
+  key: string
+  name: string
+  branch: string
+  /** One sentence on where the project's changes stand. */
+  status: string
+  tone: 'done' | 'warn' | 'plain'
+  /** Files Claude changed through its own tools, newest first. */
+  files: FileRow[]
+  /** Files that changed by shell commands, counted, not listed. */
+  byCommands: FileRow[]
+  added: number
+  removed: number
+}
+
+/** The session's changes rolled up per project, busiest first; untouched projects are left out. */
+export function changeGroups(l: Ledger): Group[] {
+  const rows = fileRows(l).filter(r => r.state !== 'read' && r.state !== 'reading')
+  const byKey: Record<string, FileRow[]> = {}
+  for (const r of rows) (byKey[r.repo ? r.repo.root : r.project] ??= []).push(r)
+  for (const r of l.repos) if (r.commits.length) byKey[r.root] ??= []
+
+  return Object.entries(byKey)
+    .map(([key, list]) => {
+      const repo = l.repos.find(r => r.root === key) ?? null
+      const files = list.filter(r => !r.isShell)
+      const byCommands = list.filter(r => r.isShell)
+      const open = list.filter(r => r.state === 'new' || r.state === 'uncommitted' || r.state === 'editing').length
+      let status = ''
+      let tone: Group['tone'] = 'plain'
+      if (repo) {
+        const made = repo.commits.length
+        if (open) {
+          status = `${open} file${open === 1 ? '' : 's'} not committed`
+          tone = 'warn'
+        } else if (made && repo.hasUpstream && repo.ahead === 0) {
+          status = `${made} commit${made === 1 ? '' : 's'}, all pushed`
+          tone = 'done'
+        } else if (made || repo.ahead) {
+          const n = repo.ahead || made
+          status = repo.hasUpstream ? `${n} commit${n === 1 ? '' : 's'} not pushed` : `${made} commit${made === 1 ? '' : 's'}, no remote`
+          tone = 'warn'
+        } else {
+          status = list.length ? 'Changes committed' : 'No changes'
+          tone = list.length ? 'done' : 'plain'
+        }
+      } else {
+        status = `${list.length} file${list.length === 1 ? '' : 's'} changed`
+      }
+      return {
+        key,
+        name: repo ? repo.name : key,
+        branch: repo ? repo.branch : '',
+        status,
+        tone,
+        files,
+        byCommands,
+        added: list.reduce((n, r) => n + r.added, 0),
+        removed: list.reduce((n, r) => n + r.removed, 0),
+        at: Math.max(0, ...list.map(r => r.at), ...(repo?.commits.map(c => c.at * 1000) ?? [])),
+      }
+    })
+    .sort((a, b) => b.at - a.at)
+    .map(({ at: _at, ...g }) => g)
 }
 
 // ---------------------------------------------------------------- small helpers

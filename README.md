@@ -46,36 +46,33 @@ Fix login bug         <- idle
 
 ## session-map
 
-One pane beside the chat that holds everything worth watching, so the
-built-in side panel can stay closed. Top to bottom:
+A side pane that tells you what is going on in one chat at a glance, so the
+built-in side panel can stay closed. Three parts, top to bottom:
 
-- **Right now**: an animated icon acts out what Claude is doing (an eye
-  scanning while it reads, a pencil writing while it edits, a blinking
-  terminal while a command runs, a turning globe for web and screen work,
-  orbiting dots for helpers, bouncing dots while it thinks, a check when it is
-  done), with the step in plain words, how long it has taken, any helpers
-  working, your last request, and the branch with commits ahead and files not
-  committed. When a request finishes it sums it up: files changed, commits,
-  how long it took.
-- **Vitals**: rings for context before auto-compaction, the 5-hour limit and
-  the weekly limit, with reset times.
-- **Activity**: one bar per step, coloured by kind (read, edit, run, web and
-  screen, helpers, publish), taller for slower steps, grouped by request.
-  Hover a bar for the step, a dot for the request.
-- **Claude touched**: every file Claude read or changed, with a file-type
-  badge, folder, lines added and removed, and its state from git: reading,
-  editing, new, not committed, committed, pushed. Files changed by shell
-  commands show up too. Press a file for its diff.
-- **Shipped**: the commits made since the session started and whether they
-  are pushed, plus published pages, pull requests, new repos and new scripts
-  (with a button that copies the command to run them).
-- **Your requests**: each request with how long it took and what it did.
-- **Files**: the project tree; folders holding changed files open by
-  themselves and say how many changed or were committed.
+- **Now**: an animated icon acts out what Claude is doing (an eye while it
+  reads, a pencil while it edits, a terminal while a command runs, a globe for
+  web and screen work, orbiting dots for helpers, bouncing dots while it
+  thinks), with the step in plain words and how long it has taken. Below it,
+  the chat's task list as a track: "Step 3 of 5 · Rebuild the pane", and the
+  last couple of steps fading out. When Claude is waiting on you it says so
+  ("Needs your answer", "Your call"); when a request finishes, its own recap
+  is the headline.
+- **This chat**: each request, newest first: what you asked, how long it took,
+  what it did in words ("4 edits · 6 commands · 12 lookups"), its recap, and
+  chips for what it left behind (commits and whether they are pushed, pull
+  requests, published pages, new scripts with a copy-run button).
+- **Changes**: one line per project with where it stands in git ("3 files not
+  committed", "2 commits, all pushed") and lines added and removed. Press it
+  for the files; press a file for its diff. Files changed by shell commands
+  are counted, not listed.
 
-It reads the session's own tool calls and runs read-only git commands
-(`status`, `diff`, `log`, `ls-files`). It makes no model calls and no network
-requests and writes no files. `/map` opens it again if you close it.
+Context and plan limits stay in plan-meter's line above the prompt; the pane
+only warns when context passes 75% or a plan limit passes 80%.
+
+It reads the session's own tool calls (including the app's task list and
+wrap-up) and runs read-only git commands (`status`, `diff`, `log`). It makes
+no model calls and no network requests and writes no files. `/map` opens it
+again if you close it.
 
 ## Install
 
