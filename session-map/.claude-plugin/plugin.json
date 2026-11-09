@@ -3,5 +3,17 @@
   "version": "0.6.0",
   "description": "A calm side pane: what Claude is doing right now and where its task list stands, each request told as what you asked and what came of it, and where each project's changes stand in git.",
   "license": "MIT",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Tristan Rafe Muzzu"
+  },
+  "homepage": "https://github.com/tristanmuzzu/claude-mods#session-map",
+  "repository": "https://github.com/tristanmuzzu/claude-mods",
+  "keywords": [
+    "pane",
+    "dashboard",
+    "git",
+    "activity",
+    "desktop"
+  ]
 }

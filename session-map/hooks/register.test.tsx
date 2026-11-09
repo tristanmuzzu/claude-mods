@@ -278,7 +278,7 @@ test('drawings are well-formed SVG', () => {
   expect((t.match(/<rect/g) ?? []).length).toBe(3)
 })
 
-test('paths are grouped by the place Tristan knows them by', () => {
+test('paths are grouped by the place you know them by', () => {
   expect(place('/home/tristan/projects/deskwright/src/a.py')).toEqual({ root: 'deskwright', rel: 'src/a.py' })
   expect(place('/home/tristan/.claude/docs/harness.md')).toEqual({ root: 'Claude config', rel: 'docs/harness.md' })
 })

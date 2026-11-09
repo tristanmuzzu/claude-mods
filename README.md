@@ -1,6 +1,37 @@
 # claude-mods
 
-Tristan's own Claude Code mods, and the marketplace they install from.
+Three mods for Claude Code: small plugins that change Claude's own interface.
+They are built for the desktop app's Code tab and work in the terminal where
+noted.
+
+| Mod | What it adds |
+| --- | --- |
+| <img src="session-map/.claude-plugin/icon.png" width="40"> **session-map** | A side pane that shows what Claude is doing, what each request came to, and where your changes stand in git |
+| <img src="working-dot/.claude-plugin/icon.png" width="40"> **working-dot** | A green dot on a chat's sidebar title while Claude works in it |
+| <img src="plan-meter/.claude-plugin/icon.png" width="40"> **plan-meter** | Context and plan limits in one line above the prompt |
+
+## Install
+
+In Claude Code, add this repository as a marketplace, then install the mods
+you want:
+
+```text
+/plugin marketplace add tristanmuzzu/claude-mods
+/plugin install session-map@tristan-mods
+/plugin install working-dot@tristan-mods
+/plugin install plan-meter@tristan-mods
+```
+
+Or from a shell:
+
+```bash
+claude plugin marketplace add tristanmuzzu/claude-mods
+claude plugin install session-map@tristan-mods --scope user
+```
+
+Restart the app (or start a new session) to load them. Updates arrive with
+`claude plugin marketplace update tristan-mods`. They need a Claude Code
+build that runs mods (tested on 2.1.319).
 
 ## plan-meter
 
@@ -47,7 +78,11 @@ Fix login bug         <- idle
 ## session-map
 
 A side pane that shows what is going on in one chat at a glance, read by
-shape and colour rather than text. Top to bottom:
+shape and colour rather than text.
+
+<img src="docs/session-map.png" width="380" alt="The session map pane: what Claude is doing now with a heartbeat of its steps, rings for context and plan limits, the chat's requests as a timeline, and the projects' git changes">
+
+Top to bottom:
 
 - **Now**: an animated icon acts out what Claude is doing (an eye while it
   reads, a pencil while it edits, a terminal while a command runs, a globe for
@@ -98,13 +133,17 @@ minute while one is open and recent or its checks run. The one program it
 starts on its own is your editor, when you press ✎. `/map` opens it again if
 you close it.
 
-## Install
+## Developing
 
 ```bash
-claude plugin marketplace add ~/projects/claude-mods
-claude plugin install plan-meter@tristan-mods --scope user
-claude plugin install working-dot@tristan-mods --scope user
-claude plugin install session-map@tristan-mods --scope user
+git clone https://github.com/tristanmuzzu/claude-mods
+claude plugin marketplace add ./claude-mods
+claude plugin test session-map
 ```
 
-Test: `claude plugin test plan-meter` (or `session-map`).
+`claude plugin test <mod>` runs a mod's tests from the repository root;
+`claude plugin validate <mod>` checks it the way the engine loads it.
+
+## License
+
+MIT

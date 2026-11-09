@@ -19,5 +19,8 @@
       "source": "./session-map",
       "description": "A calm side pane: what Claude is doing right now and where its task list stands, each request told as what you asked and what came of it, and where each project's changes stand in git."
     }
-  ]
+  ],
+  "metadata": {
+    "description": "Claude Code mods: a session map pane, a working dot for the sidebar, and a plan meter."
+  }
 }

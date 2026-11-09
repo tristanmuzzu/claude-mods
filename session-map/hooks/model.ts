@@ -396,7 +396,7 @@ function status(v: unknown): PlanItem['status'] {
   return v === 'completed' || v === 'in_progress' ? v : 'pending'
 }
 
-/** The number of the request a turn's work belongs to: the last one Tristan typed. */
+/** The number of the request a turn's work belongs to: the last one you typed. */
 export function headTurn(l: Ledger): number {
   for (let i = l.turns.length - 1; i >= 0; i--) {
     const t = l.turns[i]
@@ -631,7 +631,7 @@ export function workWords(steps: Step[]): string {
 }
 
 /**
- * True for a prompt the app or a tool sent rather than Tristan: a background
+ * True for a prompt the app or a tool sent rather than the person: a background
  * task's notice, a CI event, an app command. Its work belongs to the request
  * before it.
  */

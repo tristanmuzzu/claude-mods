@@ -6,5 +6,13 @@
   "license": "MIT",
   "author": {
     "name": "Tristan Rafe Muzzu"
-  }
+  },
+  "homepage": "https://github.com/tristanmuzzu/claude-mods#plan-meter",
+  "repository": "https://github.com/tristanmuzzu/claude-mods",
+  "keywords": [
+    "context",
+    "usage",
+    "rate-limits",
+    "status"
+  ]
 }

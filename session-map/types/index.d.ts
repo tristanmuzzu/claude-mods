@@ -7,7 +7,7 @@ export type Step = { kind: Kind; at: number; ms: number; turn: number; label: st
 /** How a request's turn ended. */
 export type TurnEnd = 'answer' | 'aborted' | 'refusal' | 'error'
 
-/** One request Tristan sent, when its turn ended and what the turn said of itself. */
+/** One request you sent, when its turn ended and what the turn said of itself. */
 export type Turn = {
   n: number
   text: string
@@ -15,7 +15,7 @@ export type Turn = {
   endedAt: number | null
   /** The wrap-up recap the turn wrote, when it wrote one. */
   recap?: string
-  /** The question the turn left for Tristan, when it left one. */
+  /** The question the turn left for you, when it left one. */
   ask?: string
   end?: TurnEnd
   /** Sent by the app or a tool, not typed: its work belongs to the request before it. */
@@ -121,7 +121,7 @@ export type Ledger = {
   plan?: PlanItem[]
   /** The request number the task list belongs to. */
   planTurn?: number
-  /** A question Claude is waiting on Tristan to answer, while it waits. */
+  /** A question Claude is waiting on you to answer, while it waits. */
   asking?: string | null
   /** The main loop's turn in progress, so a nested turn's end does not end it. */
   mainTurn?: string | null

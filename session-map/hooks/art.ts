@@ -1,7 +1,7 @@
 // The pane's drawings, as SVG strings: the animated status glyph, the task
 // track and the small marks beside each request. One colour language runs
 // through all of them: INK by kind of work, WAIT for anything that needs
-// Tristan, DONE for finished, FAIL for stopped or failed.
+// you, DONE for finished, FAIL for stopped or failed.
 
 import type { Kind, Limit, PlanItem, Vitals } from '../types'
 import type { Story } from './model'
