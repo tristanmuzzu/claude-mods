@@ -28,7 +28,7 @@ import {
   WAIT,
 } from './art'
 import type { Mood } from './art'
-import { colorAt, FADE_FRAME_MS, follow, isFading, svgFade } from './fade'
+import { colorAt, FADE_FRAME_MS, follow, isFading } from './fade'
 import type { Fade } from './fade'
 import { ago, appChats, chatRows, noteOf, seenOf, sharedOf } from './chats'
 import type { ChatRow } from './chats'
@@ -49,6 +49,8 @@ import {
   describe,
   EMPTY,
   headTurn,
+  heldLive,
+  HOLD_MS,
   isPlumbing,
   lastN,
   lineOf,
@@ -123,8 +125,15 @@ let lastError = ''
  * moves. Kept here, not in $.state: a drawing may not write state, and a reload losing a fade
  * mid-way costs nothing.
  */
-const fades: Record<'tint' | 'border' | 'track', Fade | null> = { tint: null, border: null, track: null }
+const fades: Record<'tint' | 'border', Fade | null> = { tint: null, border: null }
 let fadeTimer: { cancel: () => void } | null = null
+/**
+ * Whether this process has read the chat's transcript once. A chat the app resumes after a
+ * restart gets a new session id, and its transcript file is only written with the first prompt,
+ * after session.start: so each turn's start and end try again until one read succeeds.
+ */
+let restoreDone = false
+let restoreTries = 0
 /** Turn ends heard for a turn other than the main one in progress, for the dev probe. */
 const strayEnds: string[] = []
 
@@ -212,7 +221,10 @@ export const register: Register = on => {
   })
 
   on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined) await startTurn($, e.turnId).catch(() => undefined)
+    if (e.agentId === undefined) {
+      await startTurn($, e.turnId).catch(() => undefined)
+      if (!restoreDone) void restore($)
+    }
     return next(e)
   })
 
@@ -220,6 +232,7 @@ export const register: Register = on => {
     if (e.agentId === undefined) {
       await endTurn($, e.turnId, e.reason, e.answer).catch(() => undefined)
       soon($)
+      if (!restoreDone) void restore($)
     }
     return next(e)
   })
@@ -254,6 +267,8 @@ export const register: Register = on => {
     const path = pathOf(args) || null
     const agent = e.agentId ?? null
     await safely($, l => begin(l, { id, kind, label, at, path, agent }))
+    // The Now card takes the step only once it has run for HOLD_MS: draw again then.
+    if (agent === null) $.clock.after(HOLD_MS + 20, () => void redraw($))
     if (path && kind === 'edit') await firstLook($, path)
 
     let ran: Awaited<ReturnType<typeof next>> | null = null
@@ -292,11 +307,11 @@ export const register: Register = on => {
     const groups = changeGroups(l)
     const hero = heroOf(l, all[0] ?? null, now)
     // `tint` is the mood's colour, for drawings that never fade; `tintNow` is where the fade to it
-    // stands, for the card's texts and border. The fading SVGs carry their own animation.
+    // stands, for the card's glyph, texts and border. The glyph is drawn as an image, which starts
+    // its own animations over on every redraw, so its colour is set here frame by frame too.
     const tint = moodColor(hero.mood)
     fades.tint = follow(fades.tint, tint, now)
     fades.border = follow(fades.border, hero.isLive ? tint : '#34363a', now)
-    fades.track = follow(fades.track, hero.isLive ? tint : DONE, now)
     const tintNow = colorAt(fades.tint, now)
     if (isFading(fades.tint, now) || isFading(fades.border, now)) startFade($)
     const plan = l.plan ?? []
@@ -304,7 +319,7 @@ export const register: Register = on => {
     const place = planPlace(plan)
     const shown = v.showAllRequests ? all : all.slice(0, STORIES_SHOWN)
     const links = all.flatMap(s => s.chips.filter(c => c.href)).slice(0, 4)
-    const mainLive = [...l.live].reverse().find(x => x.agent === null && x.kind !== 'agent') ?? null
+    const mainLive = heldLive(l.live, now)
     const latest = all[0] ?? null
     const beats = latest ? latest.steps : []
     const isThinking = l.isWorking && !mainLive && !l.asking
@@ -333,7 +348,7 @@ export const register: Register = on => {
         {/* ---------------- Now */}
         <Box key="now" flexDirection="column" gap={1} padding={1} backgroundColor="#232427" borderStyle="round" borderColor={colorAt(fades.border as Fade, now)}>
           <Box flexDirection="row" gap={1} alignItems="center">
-            {Svg ? <Svg source={glyph(hero.mood, hero.isLive, svgFade(fades.tint))} width={56} height={56} alt={`${hero.eyebrow}: ${hero.headline}`} isInteractive /> : null}
+            {Svg ? <Svg source={glyph(hero.mood, hero.isLive, tintNow)} width={56} height={56} alt={`${hero.eyebrow}: ${hero.headline}`} /> : null}
             <Box flexDirection="column" flexShrink={1} minWidth={0} gap={0}>
               <Text size="caption" weight="bold" color={tintNow}>
                 {hero.eyebrow}
@@ -353,18 +368,15 @@ export const register: Register = on => {
                 isThinking,
                 W,
                 tint,
-                undefined,
-                isFading(fades.tint, now) ? svgFade(fades.tint) : '',
               )}
               width={W}
               height={PULSE_H}
               alt={pulseAlt(latest)}
-              isInteractive
             />
           ) : null}
           {showPlan ? (
             <Box flexDirection="column" gap={0}>
-              {Svg ? <Svg source={track(plan, W, hero.isLive ? tint : DONE, isFading(fades.track, now) ? svgFade(fades.track) : '')} width={W} height={8} alt={planAlt(plan)} isInteractive /> : null}
+              {Svg ? <Svg source={track(plan, W, hero.isLive ? tint : DONE)} width={W} height={8} alt={planAlt(plan)} /> : null}
               <Text size="caption" dimColor wrap="truncate-end">
                 {place.current ? `${place.index + 1} of ${place.total} · ` : `${place.done} of ${place.total} done`}
                 {place.current ? <Text color="#e6e6e6">{place.current.text}</Text> : null}
@@ -495,7 +507,7 @@ type Hero = { mood: Mood; eyebrow: string; headline: string; isLive: boolean }
 
 function heroOf(l: Ledger, last: Story | null, now: number): Hero {
   const live = [...l.live].reverse()
-  const mainLive = live.find(x => x.agent === null && x.kind !== 'agent') ?? null
+  const mainLive = heldLive(l.live, now)
   const helpers = live.filter(x => x.agent !== null || x.kind === 'agent')
   const plan = planPlace(l.plan ?? [])
   if (l.asking) return { mood: 'waiting', eyebrow: 'Needs your answer', headline: clip(l.asking, 110), isLive: true }
@@ -961,6 +973,9 @@ async function safely($: EngineInterface, fn: (l: Ledger) => Ledger) {
   } catch {
     // The map is a view; it never gets in the way of the work.
   }
+  // A change can move the Now card to a new mood: run the fade's frames from here, where a timer
+  // is sure to start, as well as from the drawing that sees the new colour.
+  startFade($)
   scheduleShare($)
 }
 
@@ -1043,18 +1058,21 @@ async function transcriptOf($: EngineInterface, id: string): Promise<string | nu
  * while it runs; this only fills a ledger that holds fewer requests than the transcript.
  */
 async function restore($: EngineInterface) {
+  if (restoreDone || restoreTries >= 8) return
+  restoreTries++
   try {
-    const l0 = await read($, ledger)
-    const typed = await $.session.turns().catch(() => 0)
-    if (l0.turns.length > 0 && typed > 0 && lastN(l0) >= typed) return
     const path = await transcriptOf($, await $.session.id())
-    if (!path) return
+    if (!path) {
+      lastError = 'restore: no transcript yet'
+      return
+    }
     // Only the last 4 MB: a long chat's transcript runs to tens of megabytes.
     const r = await $.process.run(['tail', '-c', '4000000', path], { timeoutMs: 30000 })
     if (!r.stdout) {
       lastError = `restore: exit ${r.exitCode} ${String(r.stderr).slice(0, 200)}`
       return
     }
+    restoreDone = true
     const rows = historyOf(r.stdout)
     let since = 0
     let isRestored = false
@@ -1092,17 +1110,27 @@ async function startTurn($: EngineInterface, turnId: string) {
   keepTicking($)
 }
 
+/** Draws the pane again. */
+async function redraw($: EngineInterface) {
+  await update($, view, x => ({ ...x, tick: x.tick + 1 })).catch(() => undefined)
+}
+
 /** Redraws at the frame rate while a Now card colour fades, then once more to land on it. */
 function startFade($: EngineInterface) {
   if (fadeTimer) return
+  // A write starts the timer before the drawing that reads it has begun a fade: give that drawing
+  // a few frames before stopping for want of one.
+  let idle = 0
   try {
     fadeTimer = $.clock.every(FADE_FRAME_MS, () => {
       const now = Date.now()
-      if (!Object.values(fades).some(f => isFading(f, now))) {
+      if (Object.values(fades).some(f => isFading(f, now))) idle = 0
+      else if (++idle > 3) {
         fadeTimer?.cancel()
         fadeTimer = null
+        return
       }
-      void update($, view, x => ({ ...x, tick: x.tick + 1 })).catch(() => undefined)
+      void redraw($)
     })
   } catch {
     // No timer: the colour lands on the next redraw instead.

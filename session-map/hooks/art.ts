@@ -33,11 +33,11 @@ export function moodColor(m: Mood): string {
 }
 
 /**
- * A 64px tile whose glyph acts out what Claude is doing. Its inks are
- * `currentColor`, set on the root, so `fade` (a `<style>` from svgFade) can
- * carry the whole tile from the last mood's colour to this one.
+ * A 64px tile whose glyph acts out what Claude is doing, in `color` (the
+ * mood's own by default; the Now card passes where its fade stands). Its inks
+ * are `currentColor`, set once on the root.
  */
-export function glyph(m: Mood, isLive: boolean, fade = ''): string {
+export function glyph(m: Mood, isLive: boolean, color = moodColor(m)): string {
   const c = 'currentColor'
   const halo = isLive
     ? `<rect x="2" y="2" width="60" height="60" rx="17" fill="none" stroke="${c}" stroke-width="2"><animate attributeName="stroke-opacity" values="0.55;0.08;0.55" dur="2.2s" repeatCount="indefinite"/></rect>`
@@ -105,7 +105,7 @@ export function glyph(m: Mood, isLive: boolean, fade = ''): string {
     default:
       body = `<circle cx="32" cy="32" r="10" ${s}/>`
   }
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" color="${moodColor(m)}">${fade}
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" color="${color}">
     <rect x="5" y="5" width="54" height="54" rx="15" fill="${c}" fill-opacity="0.13"/>${halo}${body}</svg>`
 }
 
@@ -113,7 +113,7 @@ export function glyph(m: Mood, isLive: boolean, fade = ''): string {
  * The task list as one track: a segment per step, filled when done, the
  * step in progress breathing in the colour of the current work.
  */
-export function track(plan: PlanItem[], width: number, live: string, fade = ''): string {
+export function track(plan: PlanItem[], width: number, live: string): string {
   const n = Math.max(1, plan.length)
   const gap = n > 12 ? 2 : 4
   const w = (width - gap * (n - 1)) / n
@@ -125,7 +125,7 @@ export function track(plan: PlanItem[], width: number, live: string, fade = ''):
     }
     return `<rect x="${x}" y="1" width="${w.toFixed(1)}" height="6" rx="3" fill="#ffffff" fill-opacity="0.1"/>`
   })
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="8" viewBox="0 0 ${width} 8" color="${live}">${fade}${parts.join('')}</svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="8" viewBox="0 0 ${width} 8" color="${live}">${parts.join('')}</svg>`
 }
 
 export type MarkKind = 'live' | 'done' | 'ask' | 'stopped' | 'quiet'
@@ -297,7 +297,7 @@ type Beat = { kind: Kind; ms: number; ok?: boolean }
  * tall as it took. A failed step is red. The step running now stands at the right end and breathes,
  * growing as it runs; while Claude thinks between steps a small dot waits there instead.
  */
-export function pulse(steps: Beat[], now: Beat | null, isThinking: boolean, width: number, live: string, height = PULSE_H, fade = ''): string {
+export function pulse(steps: Beat[], now: Beat | null, isThinking: boolean, width: number, live: string, height = PULSE_H): string {
   const k = height / PULSE_H
   const slot = Math.max(3, Math.round(5 * Math.sqrt(k)))
   const w = slot > 3 ? 3 : 2
@@ -315,7 +315,7 @@ export function pulse(steps: Beat[], now: Beat | null, isThinking: boolean, widt
     parts.push(`<circle cx="${end + 2}" cy="${mid}" r="${(2.5 * k + 0.5).toFixed(1)}" fill="currentColor"><animate attributeName="opacity" values="1;0.3;1" dur="1.3s" repeatCount="indefinite"/></circle>`)
   }
   const line = `<rect x="0" y="${mid - 0.5}" width="${width}" height="1" fill="#ffffff" fill-opacity="0.07"/>`
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" color="${live}">${fade}${line}${parts.join('')}</svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" color="${live}">${line}${parts.join('')}</svg>`
 }
 
 /**

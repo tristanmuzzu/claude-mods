@@ -1,10 +1,10 @@
 import { expect, test } from 'claude-code/testing'
 
 import { barHeight, glyph, mark, metaLine, pulse, railNode, rings, track } from './art'
-import { colorAt, ease, FADE_MS, follow, isFading, mix, svgFade } from './fade'
+import { colorAt, ease, FADE_MS, follow, isFading, mix } from './fade'
 import { appChats, chatRows, cleanTitle, isUnseen, noteOf, seenOf } from './chats'
 import { cutDiff, parseCounts, parseLog, parseStatus } from './git'
-import { applyPlan, bgAfterPrompt, bgFromStop, bgStarted, changeGroups, clip, diffRows, EMPTY, fileRows, lineOf, newTurn, saidOf, place, prStatusOf, prWords, promptText, settle, stories } from './model'
+import { applyPlan, bgAfterPrompt, heldLive, HOLD_MS, bgFromStop, bgStarted, changeGroups, clip, diffRows, EMPTY, fileRows, lineOf, newTurn, saidOf, place, prStatusOf, prWords, promptText, settle, stories } from './model'
 
 /** A pane Button by its key without the press count the pane adds to every key (see pressKey). */
 async function button(ui: { findAll: (q: { type: string }) => Promise<{ key: string | undefined; text?: string }[]> }, key: string) {
@@ -760,8 +760,8 @@ test('a mood colour fades through OKLab, and a change mid-fade starts from what 
   expect(mid).not.toBe('#c383a9')
   expect(ease(0)).toBe(0)
   expect(ease(1)).toBe(1)
-  expect(Math.abs(ease(0.5) - 0.5)).toBeLessThan(1e-9)
-  expect(ease(0.25)).toBeLessThan(0.25)
+  // Front-loaded: well past half-way a third of the way in, so the colour keeps up with the words.
+  expect(ease(1 / 3)).toBeGreaterThan(0.6)
 
   const first = follow(null, '#e07a52', 1000)
   expect(isFading(first, 1000)).toBe(false)
@@ -774,15 +774,11 @@ test('a mood colour fades through OKLab, and a change mid-fade starts from what 
   // Turned back half-way: the new fade starts from the in-between colour, not from purple.
   expect(follow(f, '#e07a52', 1000 + FADE_MS / 2).from).toBe(half)
 
-  expect(svgFade(first)).toBe('')
-  const css = svgFade(f)
-  expect(css).toContain('@keyframes')
-  expect(css).toContain('0%{color:#e07a52}')
-  expect(css).toContain('100%{color:#a68cff}')
-  const g = glyph('read', true, css)
-  expect(g).toContain('color="#a68cff"')
-  expect(g).toContain(css)
-  expect(g).not.toContain('#a68cff"/')
+  // The glyph takes the colour it is given, on its root, and draws in currentColor.
+  const g = glyph('read', true, half)
+  expect(g).toContain(`color="${half}"`)
+  expect(g).toContain('stroke="currentColor"')
+  expect(glyph('read', true)).toContain('color="#a68cff"')
 })
 
 test('the Now card eases into the next mood colour instead of switching', async ($, on) => {
@@ -810,16 +806,72 @@ test('the Now card eases into the next mood colour instead of switching', async 
   await ($ as any).turn.complete({ answer: 'ok', durationMs: 5, isAborted: false, turnId: 't1', reason: 'answer' })
   const t0 = Date.now()
   const during = await now()
-  expect(Date.now() - t0).toBeLessThan(FADE_MS / 2)
+  expect(Date.now() - t0).toBeLessThan(FADE_MS)
   {
     // Still on the way: neither the old colour nor the new one yet, and the glyph carries the fade.
     expect(during.ink).not.toBe('#5fd27e')
     expect(during.border).not.toBe('#34363a')
-    expect(during.svg).toContain('@keyframes tint')
+    // The glyph is on its way too, drawn in an in-between colour rather than the new one.
+    expect(during.svg).not.toContain('color="#5fd27e"')
     expect(timers).toContain(40)
   }
   await new Promise(r => setTimeout(r, FADE_MS + 50))
   const after = await now()
   expect(after.ink).toBe('#5fd27e')
   expect(after.border).toBe('#34363a')
+  expect(after.svg).toContain('color="#5fd27e"')
+})
+
+test('a chat resumed after a restart is told again once its new transcript appears', async ($, on) => {
+  engine(on, ['process.run'])
+  const at = (m: number) => new Date(Date.UTC(2026, 10, 9, 8, m)).toISOString()
+  const rows = [
+    { type: 'user', timestamp: at(0), message: { content: 'Smooth the colours' } },
+    { type: 'user', timestamp: at(5), message: { content: 'thanks' } },
+    { type: 'user', timestamp: at(30), message: { content: 'Show me it working' } },
+  ]
+  // The resumed chat's transcript is written with its first prompt, after session.start.
+  let exists = false
+  let reads = 0
+  on('session.id', () => ({ value: 'chat-2' }))
+  on('env.get', (_: unknown, e: any) => ({ value: e.name === 'HOME' ? '/home/t' : undefined }))
+  on('session.cwd', () => ({ value: '/' }))
+  on('fs.stat', (_: unknown, e: any) => (exists && String(e.path).endsWith('/projects/-/chat-2.jsonl') ? { value: { kind: 'file', size: 1, mtimeMs: 1, isLink: false } } : { deny: 'no such file' }))
+  on('process.run', (_: unknown, e: any) => {
+    if (e.argv?.[0] === 'tail') {
+      reads++
+      return { value: { exitCode: 0, stdout: `${rows.map(r => JSON.stringify(r)).join('\n')}\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    return { value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await new Promise(r => setTimeout(r, 60))
+  expect(reads).toBe(0)
+
+  exists = true
+  await $.prompt.submit({ text: 'Show me it working' } as any)
+  await ($ as any).turn.start({ text: 'Show me it working', turnId: 't1' })
+  for (let i = 0; i < 50 && !reads; i++) await new Promise(r => setTimeout(r, 10))
+  await new Promise(r => setTimeout(r, 50))
+  expect(reads).toBe(1)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const all = (await texts(ui)).join('\n')
+  expect(all).toContain('Smooth the colours')
+  expect(all).toContain('3 requests')
+  await ui.unmount()
+  // Read once: later turns do not read it again.
+  await ($ as any).turn.complete({ answer: '', durationMs: 5, isAborted: false, turnId: 't1', reason: 'answer' })
+  await new Promise(r => setTimeout(r, 50))
+  expect(reads).toBe(1)
+})
+
+test('a step shorter than the hold never takes over the Now card', () => {
+  const read = { id: 'r', kind: 'read', label: 'Reading a.ts', at: 1000, path: null, agent: null } as any
+  const helper = { ...read, id: 'h', agent: 'a1' }
+  expect(heldLive([read], 1000 + 60)).toBeNull()
+  expect(heldLive([read], 1000 + HOLD_MS)).toBe(read)
+  expect(heldLive([read, helper], 1000 + HOLD_MS)).toBe(read)
+  // A newer quick step does not hide an older one that has been running.
+  const quick = { ...read, id: 'q', at: 1500 }
+  expect(heldLive([read, quick], 1550)).toBe(read)
 })

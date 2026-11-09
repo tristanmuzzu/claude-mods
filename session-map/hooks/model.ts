@@ -1021,3 +1021,15 @@ export function diffRows(diff: string): DiffRow[] {
   }
   return rows
 }
+
+/**
+ * How long a step must run before the Now card shows it. A quick read or check (most last under a
+ * tenth of a second) would otherwise swing the card's words, glyph and colour away and straight
+ * back, and reload each drawing twice. The step still lands on the heartbeat when it ends.
+ */
+export const HOLD_MS = 400
+
+/** The main loop's step the Now card shows: the newest one that has run for HOLD_MS. */
+export function heldLive(live: Live[], now: number): Live | null {
+  return [...live].reverse().find(x => x.agent === null && x.kind !== 'agent' && now - x.at >= HOLD_MS) ?? null
+}

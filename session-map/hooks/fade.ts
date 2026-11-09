@@ -1,12 +1,15 @@
 // Colour fades for the Now card. The host has no CSS transitions on Box or
-// Text, so a change of mood colour is eased here: the border and eyebrow are
-// redrawn a few times with an in-between colour, and the SVGs carry a CSS
-// animation of their own `color` that runs inside their frame. Colours mix in
+// Text, and an Svg drawn as an image starts its animations over on every
+// redraw, so a change of mood colour is eased here: the border, eyebrow and
+// glyph are redrawn at the frame rate with an in-between colour. Colours mix in
 // OKLab, the space CSS color-mix() uses, so orange to purple passes through a
 // clean rose rather than a muddy brown.
 
-/** How long a fade lasts. */
-export const FADE_MS = 600
+/**
+ * How long a fade lasts. Short, as the card's words and glyph shape change at once: a longer fade
+ * (600ms was tried) leaves a step that runs under a second drawn in the colour of the one before.
+ */
+export const FADE_MS = 300
 /** Redraw period while a fade runs: 25 frames a second. */
 export const FADE_FRAME_MS = 40
 
@@ -33,22 +36,9 @@ export function colorAt(f: Fade, now: number): string {
   return mix(f.from, f.to, ease(t))
 }
 
-/**
- * A `<style>` for an SVG whose inks are `currentColor`: it animates the root's
- * colour from the fade's start to its end over what is left of it. Empty when
- * there is nothing to fade. The markup holds no clock, so it stays identical
- * across redraws and the frame drawing it is never replaced mid-fade.
- */
-export function svgFade(f: Fade | null): string {
-  if (!f || f.from === f.to) return ''
-  const N = 8
-  const stops = Array.from({ length: N + 1 }, (_, i) => `${Math.round((i / N) * 100)}%{color:${mix(f.from, f.to, ease(i / N))}}`)
-  return `<style>svg{animation:tint ${FADE_MS}ms linear both}@keyframes tint{${stops.join('')}}</style>`
-}
-
-/** Ease in and out (sine): gentle at both ends without lingering on the old colour. */
+/** Ease out (cubic): most of the change at once, so the colour keeps up with the words, then settles. */
 export function ease(t: number): number {
-  return 0.5 - Math.cos(Math.PI * t) / 2
+  return 1 - (1 - t) ** 3
 }
 
 /** `a` to `b` at `t` (0..1), mixed in OKLab; hex in, hex out. */
