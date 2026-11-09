@@ -1,116 +1,12 @@
-// Reading git, read-only: which repository a file belongs to, what is
-// uncommitted, what was committed since the map started, and what is pushed.
-// Pure parsers are exported for the tests; the callers take `$` at top level.
+// Reading git's output: pure parsers, exported for the tests. The calls that run git take `$`
+// and live in register.tsx, where the directory's checks can follow every use of `$`.
 
-import type { EngineInterface } from 'claude-code'
-
-import type { Commit, PrStatus, Repo, RepoFile } from '../types'
-import { prStatusOf } from './model'
-
-const roots: Record<string, string | null> = {}
-
-/** The last git failure, for the dev probe. */
-export const gitTrouble = { last: '' }
-
-async function git($: EngineInterface, cwd: string, args: string[]): Promise<string | null> {
-  try {
-    const r = await $.process.run(['git', '-C', cwd, ...args], { timeoutMs: 8000 })
-    if (r.exitCode !== 0) gitTrouble.last = `git ${args[0]} in ${cwd}: exit ${r.exitCode} ${r.stderr.slice(0, 200)}`
-    return r.exitCode === 0 ? r.stdout : null
-  } catch (err) {
-    gitTrouble.last = `git ${args[0]} in ${cwd}: ${String(err).slice(0, 300)}`
-    return null
-  }
-}
-
-/** The root already found for `dir`: a string, null for no repository, undefined when not looked up yet. */
-export function knownRoot(dir: string): string | null | undefined {
-  return dir in roots ? (roots[dir] ?? null) : undefined
-}
-
-/** The repository root that holds `dir`, or null; remembered per folder. */
-export async function rootOf($: EngineInterface, dir: string): Promise<string | null> {
-  if (dir in roots) return roots[dir] ?? null
-  const out = await git($, dir, ['rev-parse', '--show-toplevel'])
-  const root = out ? out.trim() : null
-  roots[dir] = root
-  return root
-}
-
-/** Looks at one repository; the first look sets its baseline and starting commit. */
-export async function scan($: EngineInterface, root: string, was: Repo | null, now: number): Promise<Repo | null> {
-  const status = await git($, root, ['status', '--porcelain=v1', '-b', '--untracked-files=all'])
-  if (status === null) return was
-  const numstat = (await git($, root, ['diff', '--numstat', 'HEAD'])) ?? ''
-  const head = ((await git($, root, ['rev-parse', 'HEAD'])) ?? '').trim()
-  const headAtStart = was?.headAtStart ?? head
-  const parsed = parseStatus(status, numstat)
-  // Every file dirty at the first look is older than the session, however many there are. Only the
-  // files kept are capped, and the session's own come first, so a busy repository cannot push them out.
-  const baseline = was ? was.baseline : parsed.files.map(f => f.rel)
-  const old = new Set(baseline)
-  const files = [...parsed.files.filter(f => !old.has(f.rel)), ...parsed.files.filter(f => old.has(f.rel))].slice(0, 400)
-  // Folders that held untracked files before the session hold tool bookkeeping (snapshots, caches):
-  // new files there are left out. Anywhere else a new file is counted, line by line.
-  const quiet = was?.quiet ?? [...new Set(parsed.files.filter(f => f.code === '??' && old.has(f.rel)).map(f => topOf(f.rel)).filter(Boolean))]
-  const fresh = files.filter(f => f.code === '??' && !old.has(f.rel) && !quiet.includes(topOf(f.rel))).slice(0, 80)
-  const counts = await lineCounts($, root, fresh.map(f => f.rel))
-  for (const f of fresh) f.added = counts[f.rel] ?? 0
-  // Line counts since the session started: what was committed since counts too.
-  const sinceStat = headAtStart && head && head !== headAtStart ? ((await git($, root, ['diff', '--numstat', headAtStart])) ?? '') : numstat
-  const changed = parseNumstat(sinceStat)
-  let commits: Commit[] = []
-  if (headAtStart && head && head !== headAtStart) {
-    const log = await git($, root, ['log', '--format=%h%x09%ct%x09%s', '-n', '30', `${headAtStart}..HEAD`])
-    commits = parseLog(log ?? '')
-  }
-  return {
-    root,
-    name: root.slice(root.lastIndexOf('/') + 1),
-    branch: parsed.branch,
-    hasUpstream: parsed.hasUpstream,
-    ahead: parsed.ahead,
-    behind: parsed.behind,
-    headAtStart,
-    baseline,
-    quiet,
-    files,
-    changed,
-    commits,
-    scannedAt: now,
-  }
-}
-
-/**
- * A repository as it stood when the chat began, for a map that starts late: the commit HEAD was
- * on then, and the changed files nobody has touched since (older than the chat, so not its work).
- */
-export async function rebase($: EngineInterface, repo: Repo, since: number): Promise<Repo> {
-  const before = await git($, repo.root, ['rev-list', '-1', `--before=${Math.floor(since / 1000)}`, 'HEAD'])
-  const baseline: string[] = []
-  for (const f of repo.files) {
-    const stat = await $.fs.stat(`${repo.root}/${f.rel}`).catch(() => null)
-    // A file gone since cannot say when; deleting it is more likely the chat's work.
-    if (stat && stat.mtimeMs < since) baseline.push(f.rel)
-  }
-  return { ...repo, headAtStart: before?.trim() || repo.headAtStart, baseline }
-}
+import type { Commit, RepoFile } from '../types'
 
 /** The first folder of a path inside the repository; empty for a file at its root. */
 export function topOf(rel: string): string {
   const i = rel.indexOf('/')
   return i > 0 ? rel.slice(0, i) : ''
-}
-
-/** Lines in each of a few files git does not track yet; a binary file counts 0. */
-async function lineCounts($: EngineInterface, root: string, rels: string[]): Promise<Record<string, number>> {
-  if (!rels.length) return {}
-  try {
-    const r = await $.process.run(['grep', '-cIH', '', '--', ...rels.map(x => `${root}/${x}`)], { timeoutMs: 8000 })
-    return parseCounts(r.stdout, root)
-  } catch {
-    return {}
-  }
 }
 
 /** `grep -cH` output (`path:count` per line) as counts by path inside the repository. */
@@ -124,33 +20,6 @@ export function parseCounts(out: string, root: string): Record<string, number> {
     counts[rel] = Number(line.slice(i + 1)) || 0
   }
   return counts
-}
-
-/** Where a pull request stands on GitHub, or null when `gh` cannot say (offline, signed out). */
-export async function prOf($: EngineInterface, url: string, now: number): Promise<PrStatus | null> {
-  try {
-    const r = await $.process.run(['gh', 'pr', 'view', url, '--json', 'state,isDraft,statusCheckRollup'], { timeoutMs: 15000 })
-    return r.exitCode === 0 ? prStatusOf(r.stdout, now) : null
-  } catch {
-    return null
-  }
-}
-
-/** The file's change against HEAD as a unified diff, cut to a readable length. */
-export async function diffOf($: EngineInterface, root: string, rel: string, isNew: boolean, base = 'HEAD'): Promise<string> {
-  const out = isNew
-    ? await gitAny($, root, ['diff', '--no-index', '--', '/dev/null', rel])
-    : await git($, root, ['diff', base || 'HEAD', '--', rel])
-  return cutDiff(out ?? '')
-}
-
-async function gitAny($: EngineInterface, cwd: string, args: string[]): Promise<string | null> {
-  try {
-    const r = await $.process.run(['git', '-C', cwd, ...args], { timeoutMs: 8000 })
-    return r.stdout
-  } catch {
-    return null
-  }
 }
 
 export function cutDiff(diff: string): string {

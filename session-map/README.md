@@ -50,37 +50,45 @@ Top to bottom:
 ## What it reads, writes and runs
 
 Everything stays on your computer except one GitHub request, listed below.
+It makes no model calls and sends nothing anywhere else.
 
 - **Reads**
-  - The chat's own tool calls as they happen, including the desktop app's
-    task list and wrap-up.
-  - When it loads after a chat has begun, that chat's own transcript (one
-    `.jsonl` file under `~/.claude/projects/`), to catch up on the steps it
-    missed.
+  - The chat's own messages and tool calls as they happen, including the
+    desktop app's task list and wrap-up. Its hooks only watch them: it does
+    not change a prompt, a tool call or a result.
+  - When it loads after a chat has begun, the last 4 MB of that chat's own
+    transcript (one `.jsonl` file under `~/.claude/projects/`), to catch up
+    on the steps it missed.
   - Files Claude edits, to find an edit's line number.
-  - The app's list of chats (titles and links, through its `list_sessions`
-    tool) and other chats' notes, for the Other chats board.
+  - The app's list of chats (titles and links) and other chats' notes, for
+    the Other chats board.
   - Two times from the desktop app's own record of each listed chat (when you
     last opened or wrote in it, and when its last turn ended), to tell which
     finished chats you have not opened yet. These records live under
     `~/.config/Claude/claude-code-sessions/`; the map only reads them.
-- **Runs**
-  - Read-only git commands (`status`, `diff`, `log`, `rev-parse`,
-    `rev-list`) in projects the chat touches.
-  - `grep` to count lines in new files.
-  - `jq` to read the transcript, when it is installed.
-- **Network:** `gh pr view` for pull requests the chat opened, once a minute
-  while one is open and recent or its checks run. This uses your own `gh`
-  login, and nothing else leaves your computer.
+- **Runs these programs**, each by name with fixed arguments and no shell:
+  - `git` (`status`, `diff`, `log`, `rev-parse`, `rev-list`), read-only, in
+    projects the chat touches, to show what changed.
+  - `grep -c` to count lines in new files.
+  - `tail -c 4000000` on the chat's own transcript, as above.
+  - `gh pr view` for pull requests the chat opened, to show their checks.
+  - `which` and `setsid` to find and start your code editor when you press
+    ✎ (the first of VS Code, Cursor, Zed, Codium, Sublime Text, GNOME Text
+    Editor, gedit or Kate), or `gio open` when none is installed.
+  - `xdg-open` (or `open` on macOS) with a chat's `claude://` link when you
+    press it on the board.
+- **Calls these desktop app tools itself:** `get_session` once at start, to
+  learn this chat's id, and `list_sessions` every 20 seconds, for the board.
+- **Network:** only `gh pr view`, once a minute while a pull request the chat
+  opened is open and recent or its checks run. It uses your own `gh` login;
+  the map never reads or stores the token.
 - **Writes:** one small file per chat,
   `~/.local/state/claude-session-map/chats/<chat id>.json`, holding where that
   chat stands (its state, current step, one line of status and step timings),
-  so other chats' maps can show it.
-- **Starts**
-  - Your code editor, when you press ✎.
-  - `xdg-open` (or `open` on macOS) with the chat's own `claude://` link, when
-    you press a chat on the board.
-- **Never** makes model calls.
+  so other chats' maps can show it. No other tool reads or runs that file.
+- **Adds** the `/map` command, which opens or closes the pane, and one tool,
+  `inspect`, which returns the map's own state for debugging and answers
+  its own calls.
 
 `/map` opens the pane again if you close it.
 

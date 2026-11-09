@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { Bg, Kind, Ledger, Others, PlanItem, Probe, Repo, Seen, Shared, TurnEnd, View } from '../types'
+import type { Bg, Commit, Kind, Ledger, Others, PlanItem, PrStatus, Probe, Repo, RepoFile, Seen, Shared, TurnEnd, View } from '../types'
 import {
   badge,
   BG_INK,
@@ -30,12 +30,14 @@ import {
 import type { Mood } from './art'
 import { ago, appChats, chatRows, noteOf, seenOf, sharedOf } from './chats'
 import type { ChatRow } from './chats'
-import { diffOf, gitTrouble, knownRoot, prOf, rebase, rootOf, scan } from './git'
+import { cutDiff, parseCounts, parseLog, parseNumstat, parseStatus, topOf } from './git'
 import {
   begin,
   bgAfterPrompt,
   bgFromStop,
   bgStarted,
+  historyOf,
+  prStatusOf,
   changeGroups,
   fileRows,
   clip,
@@ -65,7 +67,7 @@ import {
   withBg,
   WRAP_TOOL,
 } from './model'
-import type { Chip, FileRow, Group, HistoryRow, Story } from './model'
+import type { Chip, FileRow, Group, Story } from './model'
 
 // One pane beside the chat that answers three questions at a glance:
 //   Now          what Claude is doing this second, where the task list stands,
@@ -275,7 +277,7 @@ export const register: Register = on => {
     // The pane's own inset leaves about 40px of the columns undrawn.
     const WIDE = Math.max(220, Math.round(cols * 11 - 40))
     const W = WIDE - 26
-    void note($, { surface: e.surface, bodyColumns: e.props.bodyColumns, placement: e.props.placement, at: now })
+    void recordProbe($, { surface: e.surface, bodyColumns: e.props.bodyColumns, placement: e.props.placement, at: now })
 
     const all = stories(l, now)
     const groups = changeGroups(l)
@@ -1002,22 +1004,20 @@ async function noteWrap($: EngineInterface, args: Record<string, unknown>) {
  * user and assistant rows whole. Either way the newest 4 MB at most: a first line cut short
  * does not parse and is passed over.
  */
-const HISTORY = [
-  'f=$(ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$1".jsonl 2>/dev/null | head -n 1)',
-  '[ -n "$f" ] || exit 3',
-  'if command -v jq >/dev/null 2>&1; then jq -c "$2" "$f" 2>/dev/null; else grep -E \'"type":"(user|assistant)"\' "$f"; fi | tail -c 4000000',
-].join('\n')
-
-const CUT = 'if type == "string" then .[0:$n] else . end'
-const HISTORY_JQ = [
-  'def cut($n): ' + CUT + ';',
-  'select((.type == "user" or .type == "assistant") and (.isSidechain | not))',
-  '| { type, timestamp, isMeta, message: { content: (.message.content | if type == "array" then map(',
-  '    if .type == "text" then { type, text: (.text | cut(4000)) }',
-  '    elif .type == "tool_use" then { type, id, name, input: (.input | if type == "object" then map_values(cut(20000)) else {} end) }',
-  '    elif .type == "tool_result" then { type, tool_use_id, is_error, content: (.content | if type == "array" then map(select(.type == "text") | .text) | join("\\n") else . end | cut(4000)) }',
-  '    else empty end) else cut(4000) end) } }',
-].join('\n')
+/**
+ * The chat's own transcript file: Claude Code keeps it as `<session id>.jsonl` in a folder named
+ * after the folder the chat started in, under `projects/` in its config folder.
+ */
+async function transcriptOf($: EngineInterface, id: string): Promise<string | null> {
+  const base = `${(await $.env.get('CLAUDE_CONFIG_DIR')) || `${(await $.env.get('HOME')) ?? ''}/.claude`}/projects`
+  const guess = `${base}/${(await $.session.cwd()).replace(/[^A-Za-z0-9]/g, '-')}/${id}.jsonl`
+  if (await $.fs.stat(guess).catch(() => null)) return guess
+  for (const d of await $.fs.list(base).catch(() => [])) {
+    const path = `${base}/${d.name}/${id}.jsonl`
+    if (d.kind === 'dir' && (await $.fs.stat(path).catch(() => null))) return path
+  }
+  return null
+}
 
 /**
  * Tells the chat again from its transcript when the ledger missed some of it: the map loaded
@@ -1029,20 +1029,15 @@ async function restore($: EngineInterface) {
     const l0 = await read($, ledger)
     const typed = await $.session.turns().catch(() => 0)
     if (l0.turns.length > 0 && typed > 0 && lastN(l0) >= typed) return
-    const id = await $.session.id()
-    const r = await $.process.run(['sh', '-c', HISTORY, 'session-history', id, HISTORY_JQ], { timeoutMs: 30000 })
+    const path = await transcriptOf($, await $.session.id())
+    if (!path) return
+    // Only the last 4 MB: a long chat's transcript runs to tens of megabytes.
+    const r = await $.process.run(['tail', '-c', '4000000', path], { timeoutMs: 30000 })
     if (!r.stdout) {
-      if (r.exitCode !== 3) lastError = `restore: exit ${r.exitCode} ${String(r.stderr).slice(0, 200)}`
+      lastError = `restore: exit ${r.exitCode} ${String(r.stderr).slice(0, 200)}`
       return
     }
-    const rows: HistoryRow[] = []
-    for (const line of r.stdout.split('\n')) {
-      try {
-        if (line) rows.push(JSON.parse(line) as HistoryRow)
-      } catch {
-        // The first line of a cut read, or one written as it was read.
-      }
-    }
+    const rows = historyOf(r.stdout)
     let since = 0
     let isRestored = false
     await safely($, l => {
@@ -1287,9 +1282,10 @@ async function readSeen($: EngineInterface, ids: string[]): Promise<Record<strin
 /** Opens a chat in the app by its link, as a click on it outside the app would. */
 async function openChat($: EngineInterface, r: ChatRow) {
   if (!r.link) return
-  const run = await $.process
-    .run(['sh', '-c', 'if command -v xdg-open >/dev/null 2>&1; then setsid -f xdg-open "$1" >/dev/null 2>&1; else open "$1"; fi', 'open-chat', r.link], { timeoutMs: 8000 })
-    .catch((err: unknown) => ({ exitCode: -1, stderr: String(err) }))
+  const fail = (err: unknown) => ({ exitCode: -1, stderr: String(err) })
+  // xdg-open on Linux, open on macOS; either hands the link to the app and returns.
+  let run = await $.process.run(['xdg-open', r.link], { timeoutMs: 8000 }).catch(fail)
+  if (run.exitCode !== 0) run = await $.process.run(['open', r.link], { timeoutMs: 8000 }).catch(fail)
   if (run.exitCode !== 0) $.ui.toast(`Could not open ${r.title}: ${String(run.stderr).trim().slice(0, 120) || 'no opener found'}`)
 }
 
@@ -1301,7 +1297,7 @@ async function toggleRequest($: EngineInterface, n: number) {
   await update($, view, x => ({ ...x, openRequest: x.openRequest === n ? null : n }))
 }
 
-async function note($: EngineInterface, p: Probe) {
+async function recordProbe($: EngineInterface, p: Probe) {
   try {
     const was = await read($, probe)
     if (!was || was.bodyColumns !== p.bodyColumns || was.placement !== p.placement || was.surface !== p.surface) {
@@ -1425,17 +1421,21 @@ async function toggleMore($: EngineInterface, key: string) {
  * `gio open` only when there is none. File types alone pick badly here (a
  * .tsx file reads as a game map and opens in a hex editor).
  */
-const OPEN_IN_EDITOR = [
-  'for e in code cursor zed zeditor codium subl gnome-text-editor gedit kate; do',
-  '  if command -v "$e" >/dev/null 2>&1; then setsid -f "$e" "$1" >/dev/null 2>&1; exit 0; fi',
-  'done',
-  'exec gio open "$1"',
-].join('\n')
+const EDITORS = ['code', 'cursor', 'zed', 'zeditor', 'codium', 'subl', 'gnome-text-editor', 'gedit', 'kate']
 
 async function openInEditor($: EngineInterface, path: string) {
-  const r = await $.process
-    .run(['sh', '-c', OPEN_IN_EDITOR, 'open-in-editor', path], { timeoutMs: 8000 })
-    .catch((err: unknown) => ({ exitCode: -1, stderr: String(err) }))
+  const fail = (err: unknown) => ({ exitCode: -1, stderr: String(err) })
+  let r: { exitCode: number; stderr: string } = { exitCode: -1, stderr: 'no editor found' }
+  let found = false
+  for (const editor of EDITORS) {
+    const which = await $.process.run(['which', editor], { timeoutMs: 3000 }).catch(fail)
+    if (which.exitCode !== 0) continue
+    found = true
+    // Detached, so the editor outlives the call.
+    r = await $.process.run(['setsid', '-f', editor, path], { timeoutMs: 8000 }).catch(fail)
+    break
+  }
+  if (!found) r = await $.process.run(['gio', 'open', path], { timeoutMs: 8000 }).catch(fail)
   if (r.exitCode !== 0) {
     $.ui.toast(`Could not open ${path.slice(path.lastIndexOf('/') + 1)}: ${String(r.stderr).trim().slice(0, 160) || 'no editor found'}`)
     return
@@ -1474,3 +1474,133 @@ async function copyRun($: EngineInterface, text: string, surface: string) {
   }
 }
 
+// ---------------------------------------------------------------- git, read-only
+// Which repository a file belongs to, what is uncommitted, what was committed since the map
+// started, what is pushed, and where a pull request's checks stand.
+
+const roots: Record<string, string | null> = {}
+
+/** The last git failure, for the dev probe. */
+const gitTrouble = { last: '' }
+
+async function git($: EngineInterface, cwd: string, args: string[]): Promise<string | null> {
+  try {
+    const r = await $.process.run(['git', '-C', cwd, ...args], { timeoutMs: 8000 })
+    if (r.exitCode !== 0) gitTrouble.last = `git ${args[0]} in ${cwd}: exit ${r.exitCode} ${r.stderr.slice(0, 200)}`
+    return r.exitCode === 0 ? r.stdout : null
+  } catch (err) {
+    gitTrouble.last = `git ${args[0]} in ${cwd}: ${String(err).slice(0, 300)}`
+    return null
+  }
+}
+
+/** The root already found for `dir`: a string, null for no repository, undefined when not looked up yet. */
+function knownRoot(dir: string): string | null | undefined {
+  return dir in roots ? (roots[dir] ?? null) : undefined
+}
+
+/** The repository root that holds `dir`, or null; remembered per folder. */
+async function rootOf($: EngineInterface, dir: string): Promise<string | null> {
+  if (dir in roots) return roots[dir] ?? null
+  const out = await git($, dir, ['rev-parse', '--show-toplevel'])
+  const root = out ? out.trim() : null
+  roots[dir] = root
+  return root
+}
+
+/** Looks at one repository; the first look sets its baseline and starting commit. */
+async function scan($: EngineInterface, root: string, was: Repo | null, now: number): Promise<Repo | null> {
+  const status = await git($, root, ['status', '--porcelain=v1', '-b', '--untracked-files=all'])
+  if (status === null) return was
+  const numstat = (await git($, root, ['diff', '--numstat', 'HEAD'])) ?? ''
+  const head = ((await git($, root, ['rev-parse', 'HEAD'])) ?? '').trim()
+  const headAtStart = was?.headAtStart ?? head
+  const parsed = parseStatus(status, numstat)
+  // Every file dirty at the first look is older than the session, however many there are. Only the
+  // files kept are capped, and the session's own come first, so a busy repository cannot push them out.
+  const baseline = was ? was.baseline : parsed.files.map(f => f.rel)
+  const old = new Set(baseline)
+  const files = [...parsed.files.filter(f => !old.has(f.rel)), ...parsed.files.filter(f => old.has(f.rel))].slice(0, 400)
+  // Folders that held untracked files before the session hold tool bookkeeping (snapshots, caches):
+  // new files there are left out. Anywhere else a new file is counted, line by line.
+  const quiet = was?.quiet ?? [...new Set(parsed.files.filter(f => f.code === '??' && old.has(f.rel)).map(f => topOf(f.rel)).filter(Boolean))]
+  const fresh = files.filter(f => f.code === '??' && !old.has(f.rel) && !quiet.includes(topOf(f.rel))).slice(0, 80)
+  const counts = await lineCounts($, root, fresh.map(f => f.rel))
+  for (const f of fresh) f.added = counts[f.rel] ?? 0
+  // Line counts since the session started: what was committed since counts too.
+  const sinceStat = headAtStart && head && head !== headAtStart ? ((await git($, root, ['diff', '--numstat', headAtStart])) ?? '') : numstat
+  const changed = parseNumstat(sinceStat)
+  let commits: Commit[] = []
+  if (headAtStart && head && head !== headAtStart) {
+    const log = await git($, root, ['log', '--format=%h%x09%ct%x09%s', '-n', '30', `${headAtStart}..HEAD`])
+    commits = parseLog(log ?? '')
+  }
+  return {
+    root,
+    name: root.slice(root.lastIndexOf('/') + 1),
+    branch: parsed.branch,
+    hasUpstream: parsed.hasUpstream,
+    ahead: parsed.ahead,
+    behind: parsed.behind,
+    headAtStart,
+    baseline,
+    quiet,
+    files,
+    changed,
+    commits,
+    scannedAt: now,
+  }
+}
+
+/**
+ * A repository as it stood when the chat began, for a map that starts late: the commit HEAD was
+ * on then, and the changed files nobody has touched since (older than the chat, so not its work).
+ */
+async function rebase($: EngineInterface, repo: Repo, since: number): Promise<Repo> {
+  const before = await git($, repo.root, ['rev-list', '-1', `--before=${Math.floor(since / 1000)}`, 'HEAD'])
+  const baseline: string[] = []
+  for (const f of repo.files) {
+    const stat = await $.fs.stat(`${repo.root}/${f.rel}`).catch(() => null)
+    // A file gone since cannot say when; deleting it is more likely the chat's work.
+    if (stat && stat.mtimeMs < since) baseline.push(f.rel)
+  }
+  return { ...repo, headAtStart: before?.trim() || repo.headAtStart, baseline }
+}
+
+/** Lines in each of a few files git does not track yet; a binary file counts 0. */
+async function lineCounts($: EngineInterface, root: string, rels: string[]): Promise<Record<string, number>> {
+  if (!rels.length) return {}
+  try {
+    const r = await $.process.run(['grep', '-cIH', '', '--', ...rels.map(x => `${root}/${x}`)], { timeoutMs: 8000 })
+    return parseCounts(r.stdout, root)
+  } catch {
+    return {}
+  }
+}
+
+/** Where a pull request stands on GitHub, or null when `gh` cannot say (offline, signed out). */
+async function prOf($: EngineInterface, url: string, now: number): Promise<PrStatus | null> {
+  try {
+    const r = await $.process.run(['gh', 'pr', 'view', url, '--json', 'state,isDraft,statusCheckRollup'], { timeoutMs: 15000 })
+    return r.exitCode === 0 ? prStatusOf(r.stdout, now) : null
+  } catch {
+    return null
+  }
+}
+
+/** The file's change against HEAD as a unified diff, cut to a readable length. */
+async function diffOf($: EngineInterface, root: string, rel: string, isNew: boolean, base = 'HEAD'): Promise<string> {
+  const out = isNew
+    ? await gitAny($, root, ['diff', '--no-index', '--', '/dev/null', rel])
+    : await git($, root, ['diff', base || 'HEAD', '--', rel])
+  return cutDiff(out ?? '')
+}
+
+async function gitAny($: EngineInterface, cwd: string, args: string[]): Promise<string | null> {
+  try {
+    const r = await $.process.run(['git', '-C', cwd, ...args], { timeoutMs: 8000 })
+    return r.stdout
+  } catch {
+    return null
+  }
+}

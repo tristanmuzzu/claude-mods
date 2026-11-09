@@ -462,6 +462,42 @@ export type HistoryRow = {
   message?: { content?: unknown }
 }
 
+/**
+ * The rows of a transcript's tail (`.jsonl`) the replay reads: the main conversation's user and
+ * assistant entries, long texts cut short. A first line cut in half is passed over.
+ */
+export function historyOf(text: string): HistoryRow[] {
+  const cut = (v: unknown, n: number) => (typeof v === 'string' ? v.slice(0, n) : v)
+  const rows: HistoryRow[] = []
+  for (const line of text.split('\n')) {
+    if (!line) continue
+    let r: HistoryRow & { message?: { content?: unknown } }
+    try {
+      r = JSON.parse(line) as HistoryRow
+    } catch {
+      continue
+    }
+    if ((r.type !== 'user' && r.type !== 'assistant') || r.isSidechain) continue
+    const content = r.message?.content
+    const blocks = Array.isArray(content)
+      ? (content as Block[]).flatMap((b): Block[] => {
+          if (b.type === 'text') return [{ type: 'text', text: cut(b.text, 4000) }]
+          if (b.type === 'tool_use') {
+            const input = b.input && typeof b.input === 'object' ? Object.fromEntries(Object.entries(b.input as Record<string, unknown>).map(([k, v]) => [k, cut(v, 20000)])) : {}
+            return [{ type: 'tool_use', id: b.id, name: b.name, input }]
+          }
+          if (b.type === 'tool_result') {
+            const c = Array.isArray(b.content) ? (b.content as Block[]).filter(x => x.type === 'text').map(x => String(x.text)).join('\n') : b.content
+            return [{ type: 'tool_result', tool_use_id: b.tool_use_id, is_error: b.is_error, content: cut(c, 4000) }]
+          }
+          return []
+        })
+      : cut(content, 4000)
+    rows.push({ type: r.type, timestamp: r.timestamp, isMeta: r.isMeta, message: { content: blocks } })
+  }
+  return rows
+}
+
 type Block = { type?: string; text?: unknown; id?: unknown; name?: unknown; input?: unknown; tool_use_id?: unknown; is_error?: unknown; content?: unknown }
 
 const CONTINUED = /^This session is being continued from a previous conversation/

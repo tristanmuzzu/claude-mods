@@ -52,7 +52,11 @@ function engine(on: any, own: string[] = []) {
     return { value: undefined }
   })
   on('process.run', (_: unknown, e: any) => {
-    if (e.argv?.[0] === 'sh') {
+    if (e.argv?.[0] === 'which') {
+      const ok = e.argv[1] === 'code'
+      return { value: { exitCode: ok ? 0 : 1, stdout: ok ? '/usr/bin/code' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    if (['setsid', 'xdg-open', 'open', 'gio'].includes(e.argv?.[0])) {
       opened.push(e.argv)
       return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
@@ -430,8 +434,11 @@ test('a chat the map missed is told again from its transcript', async ($, on) =>
   let asked: string[] = []
   on('session.turns', () => ({ value: 2 }))
   on('session.id', () => ({ value: 'chat-1' }))
+  on('env.get', (_: unknown, e: any) => ({ value: e.name === 'HOME' ? '/home/t' : undefined }))
+  on('session.cwd', () => ({ value: '/' }))
+  on('fs.stat', (_: unknown, e: any) => (String(e.path).endsWith('/projects/-/chat-1.jsonl') ? { value: { kind: 'file', size: 1, mtimeMs: 1 } } : { error: 'no such file' }))
   on('process.run', (_: unknown, e: any) => {
-    if (e.argv?.[3] === 'session-history') {
+    if (e.argv?.[0] === 'tail') {
       asked = e.argv
       return { value: { exitCode: 0, stdout: `{"cut short\n${rows.map(r => JSON.stringify(r)).join('\n')}\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
@@ -441,7 +448,7 @@ test('a chat the map missed is told again from its transcript', async ($, on) =>
   // The transcript is read in the background: give it a moment.
   for (let i = 0; i < 50 && !asked.length; i++) await new Promise(r => setTimeout(r, 10))
   await new Promise(r => setTimeout(r, 50))
-  expect(asked[4]).toBe('chat-1')
+  expect(asked).toEqual(['tail', '-c', '4000000', '/home/t/.claude/projects/-/chat-1.jsonl'])
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   const all = (await texts(ui)).join('\n')
