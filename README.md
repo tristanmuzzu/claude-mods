@@ -81,9 +81,18 @@ shape and colour rather than text. Top to bottom:
   open it in your code editor: the first of VS Code, Cursor, Zed, Codium,
   Sublime Text or GNOME Text Editor that is installed.
 
+- **Other chats**: every other chat from the last day, the ones that need
+  you first: a mark for where each stands (needs you, working, waiting on
+  background work, done), its title, how long ago it moved, a small heartbeat
+  of its current request and one line on what it is doing or asking. Press a
+  title to go to that chat. Each chat's map shares a small note on where it
+  stands in `~/.local/state/claude-session-map/chats/`; a chat whose map is
+  older, or that went silent while working, shows as a quiet row. Desktop
+  app only.
+
 It reads the session's own tool calls (including the app's task list and
 wrap-up) and runs read-only git commands (`status`, `diff`, `log`) and `grep`
-to count lines in new files. It makes no model calls and writes no files. Its
+to count lines in new files. It makes no model calls; the one file it writes is its own chat's note. Its
 one network request is `gh pr view` for pull requests the chat opened, once a
 minute while one is open and recent or its checks run. The one program it
 starts on its own is your editor, when you press ✎. `/map` opens it again if

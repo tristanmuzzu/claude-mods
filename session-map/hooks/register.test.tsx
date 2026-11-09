@@ -1,8 +1,9 @@
 import { expect, test } from 'claude-code/testing'
 
 import { barHeight, glyph, mark, metaLine, pulse, railNode, rings, track } from './art'
+import { appChats, chatRows, cleanTitle, noteOf } from './chats'
 import { cutDiff, parseCounts, parseLog, parseStatus } from './git'
-import { applyPlan, bgAfterPrompt, bgFromStop, bgStarted, changeGroups, clip, diffRows, EMPTY, fileRows, lineOf, newTurn, place, prStatusOf, prWords, promptText, settle, stories } from './model'
+import { applyPlan, bgAfterPrompt, bgFromStop, bgStarted, changeGroups, clip, diffRows, EMPTY, fileRows, lineOf, newTurn, saidOf, place, prStatusOf, prWords, promptText, settle, stories } from './model'
 
 /** A pane Button by its key without the press count the pane adds to every key (see pressKey). */
 async function button(ui: { findAll: (q: { type: string }) => Promise<{ key: string | undefined; text?: string }[]> }, key: string) {
@@ -612,4 +613,80 @@ test('an opened request keeps a long question whole, and finds files its older s
     at + 100_000,
   )
   expect(story?.files).toEqual(['/p/a.ts'])
+})
+
+test('other chats: those that need you first, a silent working chat is quiet, this chat left out', () => {
+  const now = 1_700_000_000_000
+  const apps = appChats(
+    JSON.stringify([
+      { sessionId: 'local_me', title: 'This one', lastActivityAt: new Date(now).toISOString(), link: 'claude://x/me' },
+      { sessionId: 'local_a', title: '🟢 Render reels', lastActivityAt: new Date(now - 60_000).toISOString(), link: 'claude://x/a' },
+      { sessionId: 'local_b', title: 'Thesis', lastActivityAt: new Date(now - 600_000).toISOString(), link: 'claude://x/b' },
+      { sessionId: 'local_c', title: 'Crashed', lastActivityAt: new Date(now - 300_000).toISOString(), link: null },
+      { sessionId: 'local_d', title: 'Old', lastActivityAt: new Date(now - 3 * 86400_000).toISOString() },
+      { sessionId: 'local_e', title: 'Archived', isArchived: true, lastActivityAt: new Date(now).toISOString() },
+    ]),
+  )
+  expect(apps.map(a => a.title)).toEqual(['This one', 'Render reels', 'Thesis', 'Crashed', 'Old'])
+  const hero = (mood: string, eyebrow: string, headline: string) => ({ mood, eyebrow, headline })
+  const notes = [
+    noteOf('local_a', hero('run', 'Running · 14s', 'Render Buzz'), true, false, false, [{ kind: 'run', ms: 9000 }], now - 5000),
+    noteOf('local_b', hero('waiting', 'Your call', 'Send it to the examiner?'), false, false, true, [], now - 600_000),
+    noteOf('local_c', hero('edit', 'Editing · 2m', 'Editing a.ts'), true, false, false, [], now - 300_000),
+  ]
+  const rows = chatRows(apps, notes, 'local_me', now)
+  expect(rows.map(r => [r.title, r.state])).toEqual([
+    ['Thesis', 'needs'],
+    ['Render reels', 'working'],
+    ['Crashed', 'quiet'],
+  ])
+  expect(rows[1]?.doing).toBe('Running')
+  expect(rows[2]?.line).toBe('No word from this chat lately')
+  expect(cleanTitle('🟢 🟢 Fix it')).toBe('Fix it')
+})
+
+test('a done request without a recap leads with the opening of its answer', () => {
+  expect(saidOf('**Yes.** Each bar is one thing Claude did.\n\nMore here.')).toBe('Yes. Each bar is one thing Claude did.')
+  expect(saidOf('```\ncode\n```\n\nThe fix is in.')).toBe('The fix is in.')
+})
+
+test('the board lists the other chats and opens one by its link', async ($, on) => {
+  const now = Date.now()
+  const wrote: string[] = []
+  on('mcp.call', (_: unknown, e: any) => {
+    const text =
+      e.tool === 'get_session'
+        ? JSON.stringify({ sessionId: 'local_me' })
+        : JSON.stringify([
+            { sessionId: 'local_me', title: 'Me', lastActivityAt: new Date(now).toISOString() },
+            { sessionId: 'local_b', title: 'Thesis review', lastActivityAt: new Date(now).toISOString(), link: 'claude://claude.ai/epitaxy/local_b' },
+          ])
+    return { value: { isError: false, content: [{ type: 'text', text }] } }
+  })
+  on('env.get', (_: unknown, e: any) => ({ value: e.name === 'HOME' ? '/home/t' : undefined }))
+  on('fs.list', () => ({ value: [{ name: 'local_b.json', kind: 'file', size: 10, mtimeMs: now, isLink: false }] }))
+  on('fs.read', () => ({
+    value: JSON.stringify(noteOf('local_b', { mood: 'waiting', eyebrow: 'Your call', headline: 'Send it to the examiner?' }, false, false, true, [], now)),
+  }))
+  on('fs.write', (_: unknown, e: any) => {
+    wrote.push(String(e.path))
+    return { value: undefined }
+  })
+  engine(on)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  for (let i = 0; i < 50; i++) {
+    const ui0 = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    const found = (await texts(ui0)).some(t => t === 'Other chats')
+    await ui0.unmount()
+    if (found) break
+    await new Promise(r => setTimeout(r, 10))
+  }
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const all = await texts(ui)
+  expect(all.some(t => t === '1 needs you')).toBe(true)
+  expect(all.some(t => t === 'Thesis review')).toBe(true)
+  expect(all.some(t => /Send it to the examiner\?/.test(t))).toBe(true)
+  await press(ui, 'chat:local_b')
+  expect(opened.some(a => a[a.length - 1] === 'claude://claude.ai/epitaxy/local_b')).toBe(true)
+  await ui.unmount()
 })

@@ -489,11 +489,14 @@ export function replay(rows: HistoryRow[], base: Ledger): Ledger {
   let l: Ledger = { ...base, steps: [], turns: [], touches: [], results: [], live: [], plan: [], planTurn: 0, isWorking: false, asking: null, mainTurn: null, startedAt: null }
   const calls = new Map<string, { tool: string; args: Record<string, unknown>; at: number }>()
   let last = 0
+  let lastSaid = ''
   const close = (end: TurnEnd, at: number) => {
     const t = l.turns[l.turns.length - 1]
     if (!t || t.endedAt !== null) return
     const endedAt = Math.max(t.at, at)
-    l = { ...l, turnEndedAt: endedAt, turns: l.turns.map((x, i) => (i === l.turns.length - 1 ? { ...x, endedAt, end, workMs: endedAt - x.at } : x)) }
+    const said = saidOf(lastSaid)
+    l = { ...l, turnEndedAt: endedAt, turns: l.turns.map((x, i) => (i === l.turns.length - 1 ? { ...x, endedAt, end, workMs: endedAt - x.at, ...(said ? { said } : {}) } : x)) }
+    lastSaid = ''
   }
   for (const row of rows) {
     if (row.isSidechain || (row.type !== 'user' && row.type !== 'assistant')) continue
@@ -501,6 +504,7 @@ export function replay(rows: HistoryRow[], base: Ledger): Ledger {
     const blocks = blocksOf(row.message?.content)
     if (row.type === 'assistant') {
       for (const b of blocks) {
+        if (b.type === 'text' && str(b.text).trim()) lastSaid = str(b.text)
         if (b.type === 'tool_use' && typeof b.id === 'string') {
           calls.set(b.id, { tool: str(b.name), args: (b.input && typeof b.input === 'object' ? b.input : {}) as Record<string, unknown>, at })
         }
@@ -547,6 +551,16 @@ export function replay(rows: HistoryRow[], base: Ledger): Ledger {
   return l
 }
 
+/** The opening of an answer, plain: markdown marks out, first paragraph, short. */
+export function saidOf(answer: string): string {
+  const first = answer
+    .replace(/```[\s\S]*?```/g, ' ')
+    .split(/\n\s*\n/)
+    .map(p => p.replace(/[*_`#>]+/g, '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/\s+/g, ' ').trim())
+    .find(Boolean)
+  return clip(first ?? '', 240)
+}
+
 /** Where the task list stands: the step in progress and how far along it is. */
 export function planPlace(plan: PlanItem[]): { done: number; total: number; current: PlanItem | null; index: number } {
   const index = plan.findIndex(x => x.status === 'in_progress')
@@ -583,6 +597,8 @@ export type Story = {
   end: TurnEnd | null
   recap: string
   ask: string
+  /** The first words of Claude's answer, for a request with no recap. */
+  said: string
   /** The request's work in plain words: "4 edits · 6 commands". */
   work: string
   /** Steps by kind, for the timeline's icons. */
@@ -683,6 +699,7 @@ export function stories(l: Ledger, now: number): Story[] {
         end: tail.end ?? null,
         recap,
         ask: tail.ask ?? '',
+        said: tail.said ?? '',
         work: workWords(steps),
         counts,
         commits,

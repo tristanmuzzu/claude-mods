@@ -293,23 +293,46 @@ type Beat = { kind: Kind; ms: number; ok?: boolean }
  * tall as it took. A failed step is red. The step running now stands at the right end and breathes,
  * growing as it runs; while Claude thinks between steps a small dot waits there instead.
  */
-export function pulse(steps: Beat[], now: Beat | null, isThinking: boolean, width: number, live: string): string {
-  const slot = 5
+export function pulse(steps: Beat[], now: Beat | null, isThinking: boolean, width: number, live: string, height = PULSE_H): string {
+  const k = height / PULSE_H
+  const slot = Math.max(3, Math.round(5 * Math.sqrt(k)))
+  const w = slot > 3 ? 3 : 2
   const room = Math.max(1, Math.floor(width / slot) - (now || isThinking ? 2 : 0))
   const shown = steps.slice(-room)
-  const mid = PULSE_H / 2
-  const bar = (x: number, h: number, c: string, extra = '') =>
-    `<rect x="${x}" y="${(mid - h / 2).toFixed(1)}" width="3" height="${h.toFixed(1)}" rx="1.5" fill="${c}"${extra}`
+  const mid = height / 2
+  const bar = (x: number, h: number, c: string) =>
+    `<rect x="${x}" y="${(mid - (h * k) / 2).toFixed(1)}" width="${w}" height="${(h * k).toFixed(1)}" rx="${w / 2}" fill="${c}"`
   const parts = shown.map((b, i) => `${bar(i * slot, barHeight(b.ms), b.ok === false ? FAIL : INK[b.kind])}/>`)
   const end = shown.length * slot + 4
   if (now) {
     const c = INK[now.kind]
     parts.push(`${bar(end, barHeight(now.ms), c)}><animate attributeName="opacity" values="1;0.35;1" dur="1.2s" repeatCount="indefinite"/></rect>`)
   } else if (isThinking) {
-    parts.push(`<circle cx="${end + 2}" cy="${mid}" r="2.5" fill="${live}"><animate attributeName="r" values="1.8;3.2;1.8" dur="1.3s" repeatCount="indefinite"/></circle>`)
+    parts.push(`<circle cx="${end + 2}" cy="${mid}" r="${(2.5 * k + 0.5).toFixed(1)}" fill="${live}"><animate attributeName="opacity" values="1;0.3;1" dur="1.3s" repeatCount="indefinite"/></circle>`)
   }
   const line = `<rect x="0" y="${mid - 0.5}" width="${width}" height="1" fill="#ffffff" fill-opacity="0.07"/>`
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${PULSE_H}" viewBox="0 0 ${width} ${PULSE_H}">${line}${parts.join('')}</svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${line}${parts.join('')}</svg>`
+}
+
+/**
+ * The 16px mark beside another chat: a pulsing amber dot when it needs you, a breathing ring in the
+ * colour of its work while it works, a slow ring while background work runs, a tick when done,
+ * a grey dot when the map has no word from it.
+ */
+export function chatMark(state: 'needs' | 'working' | 'waiting' | 'done' | 'quiet', c: string): string {
+  let body = ''
+  if (state === 'needs') {
+    body = `<circle cx="8" cy="8" r="4.5" fill="${WAIT}"/><circle cx="8" cy="8" r="4.5" fill="none" stroke="${WAIT}" stroke-width="1.5"><animate attributeName="r" values="4.5;7.5" dur="1.6s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.9;0" dur="1.6s" repeatCount="indefinite"/></circle>`
+  } else if (state === 'working') {
+    body = `<circle cx="8" cy="8" r="3.5" fill="${c}"/><circle cx="8" cy="8" r="6" fill="none" stroke="${c}" stroke-width="1.4" stroke-dasharray="9 4"><animateTransform attributeName="transform" type="rotate" from="0 8 8" to="360 8 8" dur="2.4s" repeatCount="indefinite"/></circle>`
+  } else if (state === 'waiting') {
+    body = `<circle cx="8" cy="8" r="5.5" fill="none" stroke="${c}" stroke-width="1.6"><animate attributeName="opacity" values="1;0.35;1" dur="2.6s" repeatCount="indefinite"/></circle><circle cx="8" cy="8" r="2" fill="${c}"/>`
+  } else if (state === 'done') {
+    body = `<circle cx="8" cy="8" r="6.5" fill="${DONE}" fill-opacity="0.18"/><path d="M5 8.3 L7.2 10.4 L11.2 6" fill="none" stroke="${DONE}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>`
+  } else {
+    body = `<circle cx="8" cy="8" r="3" fill="${QUIET}" fill-opacity="0.7"/>`
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">${body}</svg>`
 }
 
 /** What each kind of background work looks like: its icon and colour. */

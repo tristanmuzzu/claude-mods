@@ -1,11 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { Bg, Kind, Ledger, PlanItem, Probe, Repo, TurnEnd, View } from '../types'
+import type { Bg, Kind, Ledger, Others, PlanItem, Probe, Repo, Shared, TurnEnd, View } from '../types'
 import {
   badge,
   BG_INK,
   bgIcon,
+  chatMark,
   chevron,
   DONE,
   FAIL,
@@ -27,6 +28,8 @@ import {
   WAIT,
 } from './art'
 import type { Mood } from './art'
+import { ago, appChats, chatRows, noteOf, sharedOf } from './chats'
+import type { ChatRow } from './chats'
 import { diffOf, gitTrouble, knownRoot, prOf, rebase, rootOf, scan } from './git'
 import {
   begin,
@@ -51,6 +54,7 @@ import {
   PLAN_TOOL,
   planPlace,
   replay,
+  saidOf,
   settle,
   short,
   since,
@@ -80,6 +84,8 @@ const ledger = atom({ plugin: 'session-map', key: 'ledger' } as const, EMPTY, { 
 const VIEW0: View = { openPath: null, openDiff: null, openRepos: [], showAllRequests: false, tick: 0, copied: null }
 const view = atom({ plugin: 'session-map', key: 'view' } as const, VIEW0, { shape: 'view-3' })
 const probe = atom({ plugin: 'session-map', key: 'probe' } as const, null as Probe | null)
+const OTHERS0: Others = { apps: [], notes: [], at: 0 }
+const others = atom({ plugin: 'session-map', key: 'others' } as const, OTHERS0, { shape: 'others-1' })
 
 /** What the eyebrow says while Claude does each kind of work. */
 const DOING: Record<Kind, string> = {
@@ -98,6 +104,12 @@ const STORIES_SHOWN = 4
 
 let ticker: { cancel: () => void } | null = null
 let prTimer: { cancel: () => void } | null = null
+let lookTimer: { cancel: () => void } | null = null
+let shareSoon: { cancel: () => void } | null = null
+/** This chat as the app knows it, and the folder the maps share notes in; null outside the desktop app. */
+let self: { id: string; dir: string } | null = null
+let lastShared = ''
+let appsAt = 0
 let pending: { cancel: () => void } | null = null
 let lastError = ''
 /** Turn ends heard for a turn other than the main one in progress, for the dev probe. */
@@ -116,6 +128,12 @@ export const register: Register = on => {
       .catch(() => undefined)
     void openPane($, false)
     await boot($)
+    // The other chats: who this chat is (apart from boot, so a failed step there costs nothing
+    // here), then read now and every few seconds.
+    await knowSelf($)
+    void lookAround($)
+    lookTimer?.cancel()
+    lookTimer = $.clock.every(5000, () => void lookAround($))
     // Apart from boot, so a failed step there costs nothing here; and in the background, as
     // reading a long transcript takes a moment.
     void restore($)
@@ -187,7 +205,7 @@ export const register: Register = on => {
 
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined) {
-      await endTurn($, e.turnId, e.reason).catch(() => undefined)
+      await endTurn($, e.turnId, e.reason, e.answer).catch(() => undefined)
       soon($)
     }
     return next(e)
@@ -274,6 +292,8 @@ export const register: Register = on => {
     const also = alongside(l, now)
     const rowW = WIDE - RAIL_W - 4
     const files = new Map(fileRows(l).map(r => [r.path, r]))
+    const o = await read($, others)
+    const chats = self ? chatRows(o.apps, o.notes, self.id, now) : []
 
     const section = (title: string, note: string) => (
       <Box flexDirection="row" gap={1} alignItems="center">
@@ -419,6 +439,9 @@ export const register: Register = on => {
             {groups.map(g => groupLines($, g, v, { Box, Text, Button, Svg }))}
           </Box>
         ) : null}
+
+        {/* ---------------- Other chats */}
+        {chats.length ? otherChats($, chats, v, now, W, { Box, Text, Button, Svg }) : null}
       </Box>
     )
   })
@@ -492,7 +515,7 @@ function heroOf(l: Ledger, last: Story | null, now: number): Hero {
     return { mood: 'stopped', eyebrow: `Ended early${took}`, headline: last.end === 'error' ? 'The last request hit an error' : 'The model declined the last request', isLive: false }
   }
   if (last.ask) return { mood: 'waiting', eyebrow: 'Your call', headline: clip(last.ask, 110), isLive: false }
-  return { mood: 'done', eyebrow: `Done${took}`, headline: firstSentence(last.recap) || doneLine(last), isLive: false }
+  return { mood: 'done', eyebrow: `Done${took}`, headline: firstSentence(last.recap) || firstSentence(last.said) || doneLine(last), isLive: false }
 }
 
 /** The recap's first sentence, short enough for a headline. */
@@ -528,6 +551,71 @@ function nodeAlt(s: Story): string {
   if (s.end === 'aborted') return 'Stopped'
   if (s.end === 'error' || s.end === 'refusal') return 'Ended early'
   return s.ask ? 'Left you a question' : 'Done'
+}
+
+/** Other chats shown before "Show more". */
+const CHATS_SHOWN = 4
+const CHAT_WORD: Record<ChatRow['state'], string> = { needs: 'Needs you', working: '', waiting: 'Waiting on background work', done: 'Done', quiet: '' }
+
+/**
+ * The other chats, the ones that need you first: a mark for where each stands, its title (press
+ * to go there), how long ago it last moved, a small heartbeat of its current request and one line
+ * on what it is doing or asking.
+ */
+function otherChats($: EngineInterface, rows: ChatRow[], v: View, now: number, width: number, el: Els) {
+  const { Box, Text, Button, Svg } = el
+  const shown = v.showAllChats ? rows : rows.slice(0, CHATS_SHOWN)
+  const needs = rows.filter(r => r.state === 'needs').length
+  return (
+    <Box key="chats" flexDirection="column" gap={1}>
+      <Box flexDirection="row" gap={1} alignItems="center">
+        <Text size="body" weight="semibold" color="#d6d6d6">
+          Other chats
+        </Text>
+        <Text size="footnote" color={needs ? WAIT : QUIET}>
+          {needs ? `${needs} need${needs === 1 ? 's' : ''} you` : `${rows.length}`}
+        </Text>
+      </Box>
+      {shown.map(r => {
+        const c = r.state === 'needs' ? WAIT : moodColor(r.mood as Mood) ?? QUIET
+        const word = r.state === 'working' ? r.doing : CHAT_WORD[r.state]
+        const pulseW = Math.min(90, Math.round(width * 0.24))
+        return (
+          <Box key={`chat:${r.id}`} flexDirection="row" gap={1} alignItems="flex-start">
+            {Svg ? <Svg source={chatMark(r.state, c)} width={16} height={16} alt={word || 'No word'} isInteractive /> : null}
+            <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} gap={0}>
+              <Box flexDirection="row" gap={1} alignItems="center">
+                <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                  <Button key={pressKey(`chat:${r.id}`)} plain onPress={tap($, () => openChat($, r))} hover={{ color: '#ffffff' }}>
+                    <Text weight="medium" color={r.state === 'quiet' ? '#b9bdc3' : '#e3e3e3'} wrap="truncate-end">
+                      {r.title}
+                    </Text>
+                  </Button>
+                </Box>
+                <Text size="footnote" color={QUIET} tabular>
+                  {ago(now - r.at)}
+                </Text>
+              </Box>
+              {word || r.line || r.beats.length ? (
+                <Box flexDirection="row" gap={1} alignItems="center">
+                  {Svg && r.beats.length ? <Svg source={pulse(r.beats, null, false, pulseW, c, 14)} width={pulseW} height={14} alt={`${r.beats.length} steps`} /> : null}
+                  <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                    {/* One plain string: a Text holding Texts wrapped onto a second line instead of truncating. */}
+                    <Text size="footnote" color={r.state === 'needs' ? WAIT : word ? c : '#aeb3ba'} wrap="truncate-end">
+                      {[word, r.line].filter(Boolean).join(' · ')}
+                    </Text>
+                  </Box>
+                </Box>
+              ) : null}
+            </Box>
+          </Box>
+        )
+      })}
+      {rows.length > CHATS_SHOWN
+        ? moreToggle('all-chats', Boolean(v.showAllChats), rows.length - CHATS_SHOWN, tap($, () => flipChats($)), el, 'center')
+        : null}
+    </Box>
+  )
 }
 
 /** Files shown in an open request before the count of the rest. */
@@ -846,6 +934,7 @@ async function safely($: EngineInterface, fn: (l: Ledger) => Ledger) {
   } catch {
     // The map is a view; it never gets in the way of the work.
   }
+  scheduleShare($)
 }
 
 async function boot($: EngineInterface) {
@@ -988,7 +1077,7 @@ function keepTicking($: EngineInterface) {
   if (!ticker) ticker = $.clock.every(3000, () => void bump($))
 }
 
-async function endTurn($: EngineInterface, turnId: string, reason: TurnEnd) {
+async function endTurn($: EngineInterface, turnId: string, reason: TurnEnd, answer = '') {
   const l0 = await read($, ledger)
   // Nothing in progress: a second end for the same turn adds no time.
   if (!l0.isWorking) return
@@ -1009,7 +1098,9 @@ async function endTurn($: EngineInterface, turnId: string, reason: TurnEnd) {
     turnEndedAt: now,
     startedAt: null,
     turns: l.turns.map((t, i) =>
-      i === l.turns.length - 1 ? { ...t, endedAt: now, end: reason, workMs: (t.workMs ?? 0) + (now - (l.startedAt ?? t.at)) } : t,
+      i === l.turns.length - 1
+        ? { ...t, endedAt: now, end: reason, workMs: (t.workMs ?? 0) + (now - (l.startedAt ?? t.at)), ...(saidOf(answer) ? { said: saidOf(answer) } : {}) }
+        : t,
     ),
   }))
 }
@@ -1025,6 +1116,7 @@ async function bump($: EngineInterface) {
   } catch {
     // A missed redraw is harmless.
   }
+  scheduleShare($)
 }
 
 /** A call that left work running past itself goes on the list; a cancelled wake-up comes off. */
@@ -1068,6 +1160,96 @@ async function checkPrs($: EngineInterface) {
   } catch {
     // Offline or signed out: the link still works.
   }
+}
+
+// ---------------------------------------------------------------- other chats
+
+/**
+ * This chat's id in the desktop app, and where the maps share their notes: outside ~/.claude,
+ * which is often a git repository the map would then report as changed. Nothing outside the app.
+ */
+async function knowSelf($: EngineInterface) {
+  try {
+    const r = await $.mcp.call('ccd_session_mgmt', 'get_session', { session_id: 'self' })
+    if (r.isError) return
+    const text = r.content.map(c => ('text' in c ? String(c.text) : '')).join('')
+    const id = str((JSON.parse(text) as { sessionId?: unknown }).sessionId)
+    if (!id) return
+    const state = (await $.env.get('XDG_STATE_HOME')) || `${(await $.env.get('HOME')) ?? ''}/.local/state`
+    self = { id, dir: `${state}/claude-session-map/chats` }
+  } catch (err) {
+    // A terminal session, or an app without session tools: no board, nothing shared.
+    lastError = `knowSelf: ${String(err)}`
+  }
+}
+
+/** Shares this chat's note a moment after a change, at most once a second and a half. */
+function scheduleShare($: EngineInterface) {
+  if (!self || shareSoon) return
+  shareSoon = $.clock.after(1500, () => {
+    shareSoon = null
+    void share($)
+  })
+}
+
+async function share($: EngineInterface) {
+  if (!self) return
+  try {
+    const l = await read($, ledger)
+    const now = Date.now()
+    const all = stories(l, now)
+    const hero = heroOf(l, all[0] ?? null, now)
+    const isWaiting = !l.isWorking && alongside(l, now).length > 0
+    const needsYou = Boolean(l.asking) || (!l.isWorking && !isWaiting && Boolean(all[0]?.ask) && all[0]?.end === 'answer')
+    const note = noteOf(self.id, hero, l.isWorking, isWaiting, needsYou, all[0]?.steps ?? [], now)
+    // Idle and unchanged: nothing to write. Working: write, so the others see it is alive.
+    const sig = JSON.stringify({ ...note, at: 0 })
+    if (sig === lastShared && !l.isWorking && !isWaiting) return
+    lastShared = sig
+    await $.fs.write(`${self.dir}/${self.id}.json`, JSON.stringify(note))
+  } catch {
+    // The board is a convenience: a failed write costs nothing here.
+  }
+}
+
+/** Reads the other maps' notes, and the app's list of chats now and then; redraws only on a change. */
+async function lookAround($: EngineInterface) {
+  if (!self) return
+  try {
+    const now = Date.now()
+    const was = await read($, others)
+    let apps = was.apps
+    if (now - appsAt > 20_000) {
+      appsAt = now
+      const r = await $.mcp.call('ccd_session_mgmt', 'list_sessions', { limit: 30 })
+      if (!r.isError) apps = appChats(r.content.map(c => ('text' in c ? String(c.text) : '')).join(''))
+    }
+    const notes: Shared[] = []
+    const entries = await $.fs.list(self.dir).catch(() => [])
+    for (const f of entries) {
+      if (f.kind !== 'file' || !f.name.endsWith('.json') || now - f.mtimeMs > 24 * 3600_000) continue
+      const n = sharedOf(await $.fs.read(`${self.dir}/${f.name}`).catch(() => ''))
+      if (n && n.id !== self.id) notes.push(n)
+    }
+    const next = { apps, notes, at: now }
+    if (JSON.stringify({ ...next, at: 0 }) !== JSON.stringify({ ...was, at: 0 })) await update($, others, () => next)
+  } catch (err) {
+    // Try again in a few seconds.
+    lastError = `lookAround: ${String(err)}`
+  }
+}
+
+/** Opens a chat in the app by its link, as a click on it outside the app would. */
+async function openChat($: EngineInterface, r: ChatRow) {
+  if (!r.link) return
+  const run = await $.process
+    .run(['sh', '-c', 'if command -v xdg-open >/dev/null 2>&1; then setsid -f xdg-open "$1" >/dev/null 2>&1; else open "$1"; fi', 'open-chat', r.link], { timeoutMs: 8000 })
+    .catch((err: unknown) => ({ exitCode: -1, stderr: String(err) }))
+  if (run.exitCode !== 0) $.ui.toast(`Could not open ${r.title}: ${String(run.stderr).trim().slice(0, 120) || 'no opener found'}`)
+}
+
+async function flipChats($: EngineInterface) {
+  await update($, view, x => ({ ...x, showAllChats: !x.showAllChats }))
 }
 
 async function toggleRequest($: EngineInterface, n: number) {

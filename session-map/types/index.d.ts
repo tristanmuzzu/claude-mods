@@ -22,6 +22,8 @@ export type Turn = {
   auto?: boolean
   /** How long Claude worked on this turn, in milliseconds. */
   workMs?: number
+  /** The first words of Claude's answer, for a turn that wrote no recap. */
+  said?: string
 }
 
 /** A file Claude read or wrote through its own tools. */
@@ -139,17 +141,45 @@ export type View = {
   /** The file just sent to the editor, for a moment's feedback. */
   opened?: string | null
   showAllRequests: boolean
+  /** The other chats' whole list is open, past the first few. */
+  showAllChats?: boolean
   /** The request opened to its details, by number. */
   openRequest?: number | null
   tick: number
   copied: string | null
 }
 
+/** What one chat's map shares with the others' maps. */
+export type Shared = {
+  v: 1
+  /** The app's id for the chat (`local_…`), as its chat list names it. */
+  id: string
+  /** The kind of work or state, for the colour: a Kind, or thinking, done, waiting, stopped, ready. */
+  mood: string
+  /** What it is doing in a word or two ("Running", "Your call"), without a time. */
+  doing: string
+  /** One line: the step, the question, or the recap. */
+  line: string
+  needsYou: boolean
+  isWorking: boolean
+  /** Work still running after the turn: background commands, helpers, wake-ups. */
+  isWaiting: boolean
+  /** The current request's last steps, for a small heartbeat. */
+  beats: { kind: Kind; ms: number; ok?: boolean }[]
+  at: number
+}
+
+/** A chat as the app lists it. */
+export type AppChat = { id: string; title: string; link: string | null; lastAt: number }
+
+/** The other chats as last read: the app's list and each map's shared note. */
+export type Others = { apps: AppChat[]; notes: Shared[]; at: number }
+
 /** What the last drawing measured, for the dev probe. */
 export type Probe = { surface: string; bodyColumns: number; placement: string; at: number }
 
 declare module 'claude-code' {
   interface PluginState {
-    'session-map': { ledger: Shaped<Ledger>; view: Shaped<View>; probe: Probe | null }
+    'session-map': { ledger: Shaped<Ledger>; view: Shaped<View>; probe: Probe | null; others: Shaped<Others> }
   }
 }
