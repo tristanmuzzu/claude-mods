@@ -1,8 +1,8 @@
 /** What kind of work one tool call was: the colour language of the whole pane. */
 export type Kind = 'read' | 'edit' | 'run' | 'web' | 'agent' | 'publish' | 'other'
 
-/** One finished tool call. */
-export type Step = { kind: Kind; at: number; ms: number; turn: number; label: string; agent: string | null }
+/** One finished tool call; `path` is the file it read or edited, when it named one. */
+export type Step = { kind: Kind; at: number; ms: number; turn: number; label: string; agent: string | null; path?: string | null; ok?: boolean }
 
 /** How a request's turn ended. */
 export type TurnEnd = 'answer' | 'aborted' | 'refusal' | 'error'
@@ -46,6 +46,26 @@ export type Result = {
   /** For a script: the command that runs it. */
   run: string | null
   at: number
+  /** For a pull request: where it stands on GitHub, as last asked. */
+  pr?: PrStatus
+}
+
+/** A pull request's state and its checks, as `gh pr view` reports them. */
+export type PrStatus = {
+  state: 'OPEN' | 'MERGED' | 'CLOSED' | 'DRAFT'
+  checks: 'pass' | 'fail' | 'pending' | 'none'
+  failing: number
+  at: number
+}
+
+/** Work that runs on after the call that started it: a background command, helper, monitor or workflow, or a wake-up. */
+export type Bg = {
+  id: string
+  kind: 'shell' | 'helper' | 'monitor' | 'workflow' | 'wakeup'
+  label: string
+  at: number
+  /** For a wake-up: when it fires, when known. */
+  until?: number | null
 }
 
 /** A call still running. */
@@ -70,6 +90,8 @@ export type Repo = {
   headAtStart: string
   /** Files already dirty when the map first looked: not this session's work. */
   baseline: string[]
+  /** Top folders that already held untracked files then (tool bookkeeping): new files there are not counted. */
+  quiet?: string[]
   files: RepoFile[]
   /** Every tracked file changed since the map started, committed or not, with its line counts. */
   changed?: RepoFile[]
@@ -103,6 +125,8 @@ export type Ledger = {
   mainTurn?: string | null
   /** When the main turn in progress started. */
   startedAt?: number | null
+  /** Work in flight beyond the turn: background commands, helpers, monitors, workflows and wake-ups. */
+  background?: Bg[]
 }
 
 export type View = {
@@ -115,6 +139,8 @@ export type View = {
   /** The file just sent to the editor, for a moment's feedback. */
   opened?: string | null
   showAllRequests: boolean
+  /** The request opened to its details, by number. */
+  openRequest?: number | null
   tick: number
   copied: string | null
 }

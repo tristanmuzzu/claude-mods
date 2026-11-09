@@ -1,7 +1,7 @@
 // Pure functions: reading tool calls into the ledger, and the view model the
 // pane draws from. Nothing here touches `$`, so all of it is testable alone.
 
-import type { Kind, Ledger, Live, PlanItem, Repo, Result, Step, Touch, Turn, TurnEnd } from '../types'
+import type { Bg, Kind, Ledger, Live, PlanItem, PrStatus, Repo, Result, Step, Touch, Turn, TurnEnd } from '../types'
 
 export const EMPTY: Ledger = {
   steps: [],
@@ -83,6 +83,8 @@ type Settle = {
   ok: boolean
   text: string
   agent: string | null
+  /** For an Edit: the line its new text starts on in the file, when it could be found. */
+  line?: number
 }
 
 export function begin(l: Ledger, live: Live): Ledger {
@@ -99,10 +101,10 @@ export function settle(l: Ledger, s: Settle, now: number): Ledger {
     if (s.tool === 'Read') {
       touches = touch(touches, path, { reads: 1 }, s.at)
     } else if (s.tool === 'Edit') {
-      touches = touch(touches, path, edit(str(s.args.old_string), str(s.args.new_string), path), s.at)
+      touches = touch(touches, path, edit(str(s.args.old_string), str(s.args.new_string), path, s.line ?? 0), s.at)
     } else if (s.tool === 'MultiEdit' && Array.isArray(s.args.edits)) {
       for (const one of s.args.edits as Record<string, unknown>[]) {
-        touches = touch(touches, path, edit(str(one.old_string), str(one.new_string), path), s.at)
+        touches = touch(touches, path, edit(str(one.old_string), str(one.new_string), path, 0), s.at)
       }
     } else if (s.tool === 'Write') {
       const isNew = /created/i.test(s.text)
@@ -139,6 +141,8 @@ export function settle(l: Ledger, s: Settle, now: number): Ledger {
     turn: lastN(l),
     label: s.ok ? s.label : `${s.label} (failed)`,
     agent: s.agent,
+    path: path || null,
+    ok: s.ok,
   }
   return {
     ...l,
@@ -199,7 +203,21 @@ function createdResult(path: string, isNew: boolean, at: number): Result | null 
 
 // ---------------------------------------------------------------- diffs
 
-function edit(oldS: string, newS: string, path: string): TouchDelta {
+/**
+ * The line an Edit's new text starts on, read from the file after the edit: 1-based, or 0 when it
+ * cannot be told (no new text, or the text is not found).
+ */
+export function lineOf(file: string, newText: string): number {
+  if (!newText) return 0
+  const i = file.indexOf(newText)
+  return i < 0 ? 0 : file.slice(0, i).split('\n').length
+}
+
+/**
+ * One replacement as a diff. `line` is where the new text starts in the file; 0 means unknown, and
+ * the hunk then says `@@ -0,n +0,m @@` so no line numbers are drawn rather than made-up ones.
+ */
+function edit(oldS: string, newS: string, path: string, line: number): TouchDelta {
   const a = splitLines(oldS)
   const b = splitLines(newS)
   let s = 0
@@ -217,7 +235,7 @@ function edit(oldS: string, newS: string, path: string): TouchDelta {
   const diff = [
     `--- a/${base(path)}`,
     `+++ b/${base(path)}`,
-    `@@ -1,${oldCount} +1,${newCount} @@`,
+    `@@ -${line ? line + s - before.length : 0},${oldCount} +${line ? line + s - before.length : 0},${newCount} @@`,
     ...before.map(x => ` ${x}`),
     ...showDel.map(x => `-${x}`),
     ...showAdd.map(x => `+${x}`),
@@ -542,7 +560,18 @@ export function planPlace(plan: PlanItem[]): { done: number; total: number; curr
 // ---------------------------------------------------------------- requests as stories
 
 /** Something a request left behind, drawn as a chip under it. */
-export type Chip = { label: string; href: string | null; tone: 'done' | 'warn' | 'plain'; run?: string | null }
+export type Tone = 'done' | 'warn' | 'fail' | 'plain'
+export type Chip = {
+  label: string
+  href: string | null
+  tone: Tone
+  run?: string | null
+  /** Where a pull request stands, in a few words, and its colour. */
+  status?: { label: string; tone: Tone } | null
+}
+
+/** A commit a request made, and whether it is on the remote yet. */
+export type StoryCommit = { sha: string; subject: string; repo: string; isPushed: boolean }
 
 export type Story = {
   n: number
@@ -561,8 +590,11 @@ export type Story = {
   commits: number
   unpushed: number
   chips: Chip[]
-  /** The newest steps of this request, newest last. */
-  recent: Step[]
+  /** This request's own steps, oldest first (helpers' steps are theirs). */
+  steps: Step[]
+  /** Files the request edited through Claude's own tools, newest first. */
+  files: string[]
+  commitList: StoryCommit[]
 }
 
 const WORK_WORDS: [Kind, string, string][] = [
@@ -621,12 +653,14 @@ export function stories(l: Ledger, now: number): Story[] {
       const chips: Chip[] = []
       let commits = 0
       let unpushed = 0
+      const commitList: StoryCommit[] = []
       for (const r of l.repos) {
         const made = r.commits.filter(c => inWindow(c.at * 1000))
         if (!made.length) continue
         const isPushed = r.hasUpstream && r.ahead === 0
         commits += made.length
         if (!isPushed) unpushed += made.length
+        for (const c of made) commitList.push({ sha: c.sha, subject: c.subject, repo: r.name, isPushed })
         chips.push({
           label: `${made.length} commit${made.length === 1 ? '' : 's'} in ${r.name}${isPushed ? ', pushed' : ''}`,
           href: null,
@@ -634,7 +668,7 @@ export function stories(l: Ledger, now: number): Story[] {
         })
       }
       for (const r of l.results.filter(x => inWindow(x.at)).slice(-4)) {
-        chips.push({ label: `${RESULT_WORD[r.kind] ?? ''}${r.title}`, href: r.href, tone: 'plain', run: r.run })
+        chips.push({ label: `${RESULT_WORD[r.kind] ?? ''}${r.title}`, href: r.href, tone: 'plain', run: r.run, status: r.pr ? prWords(r.pr) : null })
       }
       const counts: Partial<Record<Kind, number>> = {}
       for (const s of steps) counts[s.kind] = (counts[s.kind] ?? 0) + 1
@@ -653,10 +687,98 @@ export function stories(l: Ledger, now: number): Story[] {
         commits,
         unpushed,
         chips,
-        recent: steps.slice(-4),
+        steps,
+        files: [...new Set(steps.filter(x => x.kind === 'edit' && x.path && x.ok !== false).map(x => x.path as string).reverse())],
+        commitList,
       }
     })
     .reverse()
+}
+
+/** A pull request's state in a few words, for the chip beside its link. */
+export function prWords(p: PrStatus): { label: string; tone: Tone } | null {
+  if (p.state === 'MERGED') return { label: 'merged', tone: 'done' }
+  if (p.state === 'CLOSED') return { label: 'closed', tone: 'plain' }
+  if (p.checks === 'fail') return { label: `${p.failing} check${p.failing === 1 ? '' : 's'} failing`, tone: 'fail' }
+  if (p.checks === 'pending') return { label: 'checks running', tone: 'warn' }
+  if (p.checks === 'pass') return { label: 'checks passing', tone: 'done' }
+  return { label: p.state === 'DRAFT' ? 'draft' : 'open', tone: 'plain' }
+}
+
+/** `gh pr view --json state,isDraft,statusCheckRollup` as a status. Check runs carry a conclusion, status contexts a state. */
+export function prStatusOf(json: string, at: number): PrStatus | null {
+  let v: { state?: string; isDraft?: boolean; statusCheckRollup?: { status?: string; conclusion?: string; state?: string }[] }
+  try {
+    v = JSON.parse(json)
+  } catch {
+    return null
+  }
+  const state = v.state === 'MERGED' || v.state === 'CLOSED' ? v.state : v.isDraft ? 'DRAFT' : 'OPEN'
+  const rolls = Array.isArray(v.statusCheckRollup) ? v.statusCheckRollup : []
+  let failing = 0
+  let pending = 0
+  for (const c of rolls) {
+    const word = String(c.conclusion || c.state || '').toUpperCase()
+    if (c.status && c.status !== 'COMPLETED') pending++
+    else if (['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE'].includes(word)) failing++
+    else if (['PENDING', 'EXPECTED', 'QUEUED', 'IN_PROGRESS', ''].includes(word)) pending++
+  }
+  const checks = !rolls.length ? 'none' : failing ? 'fail' : pending ? 'pending' : 'pass'
+  return { state, checks, failing, at }
+}
+
+// ---------------------------------------------------------------- background work
+
+/** A tool call that leaves work running past itself, as the background list keeps it; null for any other. */
+export function bgStarted(tool: string, a: Record<string, unknown>, text: string, now: number, fallbackId: string): Bg | null {
+  const id = /\b(?:ID|id|task[_ ]?id|agentId)[:=]\s*"?([\w-]{4,})/.exec(text)?.[1] ?? fallbackId
+  if (tool === 'Bash' && a.run_in_background === true) {
+    return { id, kind: 'shell', label: str(a.description) || clip(str(a.command), 60), at: now }
+  }
+  if ((tool === 'Agent' || tool === 'Task') && a.run_in_background === true) {
+    return { id, kind: 'helper', label: str(a.description) || 'Helper', at: now }
+  }
+  if (tool === 'Monitor') return { id, kind: 'monitor', label: str(a.description) || clip(str(a.command), 60) || 'Watching', at: now }
+  if (tool === 'Workflow') return { id, kind: 'workflow', label: str(a.name) || 'Workflow', at: now }
+  if (tool === 'ScheduleWakeup' && a.stop !== true && typeof a.delaySeconds === 'number') {
+    return { id: 'wakeup', kind: 'wakeup', label: str(a.reason) || 'Picks the task up again', at: now, until: now + a.delaySeconds * 1000 }
+  }
+  return null
+}
+
+/** The list with one more: a wake-up replaces the one before (a session has one), anything else adds. */
+export function withBg(list: Bg[], b: Bg): Bg[] {
+  return [...list.filter(x => x.id !== b.id && !(b.kind === 'wakeup' && x.kind === 'wakeup')), b].slice(-12)
+}
+
+type StopTask = { id?: string; type?: string; description?: string; command?: string; name?: string }
+type StopCron = { id?: string; recurring?: boolean; prompt?: string; schedule?: string }
+
+/**
+ * The engine's own word at the end of a turn on what is still in flight, which replaces what the
+ * map pieced together. Entries it already had keep their start time and wake time.
+ */
+export function bgFromStop(tasks: StopTask[], crons: StopCron[], was: Bg[], now: number): Bg[] {
+  const kindOf = (t: string): Bg['kind'] => (t === 'shell' ? 'shell' : t === 'monitor' ? 'monitor' : t === 'workflow' ? 'workflow' : 'helper')
+  const same = (b: Bg) => was.find(x => x.id === b.id || (x.kind === b.kind && x.label === b.label))
+  const out: Bg[] = []
+  for (const t of tasks) {
+    const b: Bg = { id: str(t.id), kind: kindOf(str(t.type)), label: clip(str(t.description) || str(t.command) || str(t.name) || 'Background work', 80), at: now }
+    const old = same(b)
+    out.push(old ? { ...b, at: old.at, label: old.label || b.label } : b)
+  }
+  for (const c of crons) {
+    const old = was.find(x => x.kind === 'wakeup')
+    const label = c.recurring ? `Repeats ${str(c.schedule)}` : old?.label || 'Picks the task up again'
+    out.push({ id: str(c.id) || 'wakeup', kind: 'wakeup', label, at: old?.at ?? now, until: c.recurring ? null : (old?.until ?? null) })
+  }
+  return out
+}
+
+/** A prompt the app sent: a finished task's notice takes that task off, a wake-up that came due goes. */
+export function bgAfterPrompt(list: Bg[], text: string, now: number): Bg[] {
+  const done = /<task-id>\s*([\w-]+)\s*<\/task-id>/.exec(text)?.[1]
+  return list.filter(b => b.id !== done && !(b.kind === 'wakeup' && b.until != null && b.until <= now + 5000))
 }
 
 const RESULT_WORD: Record<string, string> = { artifact: 'Page: ', pr: '', repo: '', script: 'Script: ', doc: 'File: ', push: '' }
@@ -813,6 +935,7 @@ export function diffRows(diff: string): DiffRow[] {
   let oldN = 0
   let newN = 0
   let seenHunk = false
+  let isKnown = true
   for (const line of diff.split('\n')) {
     const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
     if (hunk) {
@@ -820,13 +943,15 @@ export function diffRows(diff: string): DiffRow[] {
       seenHunk = true
       oldN = Number(hunk[1])
       newN = Number(hunk[2])
+      isKnown = oldN > 0 || newN > 0
       continue
     }
     if (!seenHunk || line.startsWith('\\')) continue
-    if (line.startsWith('+')) rows.push({ kind: 'add', num: newN++, text: line.slice(1) })
-    else if (line.startsWith('-')) rows.push({ kind: 'del', num: oldN++, text: line.slice(1) })
+    const n = (v: number) => (isKnown ? v : null)
+    if (line.startsWith('+')) rows.push({ kind: 'add', num: n(newN++), text: line.slice(1) })
+    else if (line.startsWith('-')) rows.push({ kind: 'del', num: n(oldN++), text: line.slice(1) })
     else if (line.startsWith(' ')) {
-      rows.push({ kind: 'ctx', num: newN, text: line.slice(1) })
+      rows.push({ kind: 'ctx', num: n(newN), text: line.slice(1) })
       oldN++
       newN++
     }

@@ -4,7 +4,8 @@
 
 import type { EngineInterface } from 'claude-code'
 
-import type { Commit, Repo, RepoFile } from '../types'
+import type { Commit, PrStatus, Repo, RepoFile } from '../types'
+import { prStatusOf } from './model'
 
 const roots: Record<string, string | null> = {}
 
@@ -49,6 +50,12 @@ export async function scan($: EngineInterface, root: string, was: Repo | null, n
   const baseline = was ? was.baseline : parsed.files.map(f => f.rel)
   const old = new Set(baseline)
   const files = [...parsed.files.filter(f => !old.has(f.rel)), ...parsed.files.filter(f => old.has(f.rel))].slice(0, 400)
+  // Folders that held untracked files before the session hold tool bookkeeping (snapshots, caches):
+  // new files there are left out. Anywhere else a new file is counted, line by line.
+  const quiet = was?.quiet ?? [...new Set(parsed.files.filter(f => f.code === '??' && old.has(f.rel)).map(f => topOf(f.rel)).filter(Boolean))]
+  const fresh = files.filter(f => f.code === '??' && !old.has(f.rel) && !quiet.includes(topOf(f.rel))).slice(0, 80)
+  const counts = await lineCounts($, root, fresh.map(f => f.rel))
+  for (const f of fresh) f.added = counts[f.rel] ?? 0
   // Line counts since the session started: what was committed since counts too.
   const sinceStat = headAtStart && head && head !== headAtStart ? ((await git($, root, ['diff', '--numstat', headAtStart])) ?? '') : numstat
   const changed = parseNumstat(sinceStat)
@@ -66,6 +73,7 @@ export async function scan($: EngineInterface, root: string, was: Repo | null, n
     behind: parsed.behind,
     headAtStart,
     baseline,
+    quiet,
     files,
     changed,
     commits,
@@ -86,6 +94,46 @@ export async function rebase($: EngineInterface, repo: Repo, since: number): Pro
     if (stat && stat.mtimeMs < since) baseline.push(f.rel)
   }
   return { ...repo, headAtStart: before?.trim() || repo.headAtStart, baseline }
+}
+
+/** The first folder of a path inside the repository; empty for a file at its root. */
+export function topOf(rel: string): string {
+  const i = rel.indexOf('/')
+  return i > 0 ? rel.slice(0, i) : ''
+}
+
+/** Lines in each of a few files git does not track yet; a binary file counts 0. */
+async function lineCounts($: EngineInterface, root: string, rels: string[]): Promise<Record<string, number>> {
+  if (!rels.length) return {}
+  try {
+    const r = await $.process.run(['grep', '-cIH', '', '--', ...rels.map(x => `${root}/${x}`)], { timeoutMs: 8000 })
+    return parseCounts(r.stdout, root)
+  } catch {
+    return {}
+  }
+}
+
+/** `grep -cH` output (`path:count` per line) as counts by path inside the repository. */
+export function parseCounts(out: string, root: string): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const line of out.split('\n')) {
+    const i = line.lastIndexOf(':')
+    if (i <= 0) continue
+    const path = line.slice(0, i)
+    const rel = path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path
+    counts[rel] = Number(line.slice(i + 1)) || 0
+  }
+  return counts
+}
+
+/** Where a pull request stands on GitHub, or null when `gh` cannot say (offline, signed out). */
+export async function prOf($: EngineInterface, url: string, now: number): Promise<PrStatus | null> {
+  try {
+    const r = await $.process.run(['gh', 'pr', 'view', url, '--json', 'state,isDraft,statusCheckRollup'], { timeoutMs: 15000 })
+    return r.exitCode === 0 ? prStatusOf(r.stdout, now) : null
+  } catch {
+    return null
+  }
 }
 
 /** The file's change against HEAD as a unified diff, cut to a readable length. */

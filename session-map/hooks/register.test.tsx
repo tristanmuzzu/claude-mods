@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 
-import { glyph, mark, rings, timelineRow, track } from './art'
-import { cutDiff, parseLog, parseStatus } from './git'
-import { applyPlan, changeGroups, clip, diffRows, EMPTY, fileRows, newTurn, place, promptText, settle, stories } from './model'
+import { barHeight, glyph, mark, metaLine, pulse, railNode, rings, track } from './art'
+import { cutDiff, parseCounts, parseLog, parseStatus } from './git'
+import { applyPlan, bgAfterPrompt, bgFromStop, bgStarted, changeGroups, clip, diffRows, EMPTY, fileRows, lineOf, newTurn, place, prStatusOf, prWords, promptText, settle, stories } from './model'
 
 /** A pane Button by its key without the press count the pane adds to every key (see pressKey). */
 async function button(ui: { findAll: (q: { type: string }) => Promise<{ key: string | undefined; text?: string }[]> }, key: string) {
@@ -81,13 +81,9 @@ test('the pane tells the request as a story and rolls changes up by project', as
     const ui = await $.ui.mount({ ...PANE, surface })
     const all = await texts(ui)
     expect(all.some(t => t === 'This chat')).toBe(true)
-    if (surface === 'terminal') {
-      expect(all.some(t => /Make the sidebar better/.test(t))).toBe(true)
-    } else {
-      // Desktop draws the requests as a timeline; its alt text names them.
-      const svgs = (await ui.findAll({ type: 'Svg' })) as any[]
-      expect(svgs.some(x => /Make the sidebar better/.test(String(x.props?.alt ?? '')))).toBe(true)
-    }
+    // Each request is a pressable line of text, on the timeline's rail on desktop.
+    expect(all.some(t => /Make the sidebar better/.test(t))).toBe(true)
+    expect(await button(ui, 'req:1')).toBeTruthy()
     // The pane no longer lists every file up front: one line per project.
     expect(await button(ui, `open:${PROJECT}/a.ts`)).toBeFalsy()
     expect((await button(ui, 'group-btn:claude-mods'))?.text).toContain('claude-mods')
@@ -104,7 +100,7 @@ test('the pane tells the request as a story and rolls changes up by project', as
   expect(diff).toContain('two')
   expect(diff).toContain('+')
   expect(diff).toContain('3')
-  expect(await button(ui, 'copy:Script: run.sh')).toBeTruthy()
+  expect(await button(ui, 'links:copy:Script: run.sh')).toBeTruthy()
   // Every listed file can be sent to the editor.
   await press(ui, `edit:${PROJECT}/a.ts`)
   expect(opened.map(a => a[a.length - 1])).toEqual([`${PROJECT}/a.ts`])
@@ -325,11 +321,10 @@ test('a request row is drawn at a fixed size with icons and counts', () => {
     },
     at + 100_000,
   )
-  const svg = timelineRow(story!, true, false, 360, '#fff')
-  expect(svg).toContain('height="56"')
-  expect(svg).toContain('Fix &lt;it&gt;')
-  expect(svg).toContain('>1m<')
-  expect(svg).toContain('>2<')
+  expect(railNode(story!, true, false, '#fff')).toContain('height="56"')
+  const meta = metaLine(story!, 330, '#fff')
+  expect(meta).toContain('>2<')
+  expect(meta).toContain('>1<')
 })
 
 test('four requests show at full size; the rest open below on Show more', async ($, on) => {
@@ -337,7 +332,7 @@ test('four requests show at full size; the rest open below on Show more', async 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   for (let i = 1; i <= 6; i++) await $.prompt.submit({ text: `Request ${i}` } as any)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  const rows = async () => ((await ui.findAll({ type: 'Svg' })) as any[]).filter(x => /^Request \d$/.test(String(x.props?.alt ?? ''))).length
+  const rows = async () => ((await ui.findAll({ type: 'Button' })) as any[]).filter(x => /^req:\d+~/.test(String(x.key ?? ''))).length
   expect(await rows()).toBe(4)
   const before = await button(ui, 'all-requests')
   expect(before?.text).toBe('Show 2 more')
@@ -511,4 +506,93 @@ test('a busy repository keeps every older dirty file in its baseline', () => {
 
 test('a clipped line ends in one ellipsis', () => {
   expect(clip("I'm in a meeting rn.... back soon", 21)).toBe("I'm in a meeting rn…")
+})
+
+test('pressing a request opens its story: heartbeat, recap, files and commits', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'Fix the login bug' } as any)
+  await ($ as any).turn.start({ text: 'Fix the login bug', turnId: 't1' })
+  await $.tool.call({ tool: 'Edit', file_path: '/tmp/x/login.ts', old_string: 'a', new_string: 'b', tool_use_id: 'e1' } as any)
+  await $.tool.call({ tool: WRAP, recap: 'The login bug is fixed. Tests pass.', tool_use_id: 'w1' } as any)
+  await ($ as any).turn.complete({ answer: '', durationMs: 5, isAborted: false, turnId: 't1', reason: 'answer' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await texts(ui)).some(t => /Tests pass/.test(t))).toBe(false)
+  await press(ui, 'req:1')
+  const all = await texts(ui)
+  expect(all.some(t => /The login bug is fixed\. Tests pass\./.test(t))).toBe(true)
+  expect(all.some(t => /1 edit/.test(t))).toBe(true)
+  expect(await button(ui, 'open:req1:/tmp/x/login.ts')).toBeTruthy()
+  expect(((await ui.findAll({ type: 'Svg' })) as any[]).filter(x => /height="30"/.test(String(x.props?.source))).length).toBe(2)
+  await press(ui, 'req:1')
+  expect((await texts(ui)).some(t => /Tests pass/.test(t))).toBe(false)
+  await ui.unmount()
+})
+
+test('the heartbeat draws a bar per step, red when it failed, the running one breathing', () => {
+  expect(barHeight(0)).toBe(3)
+  expect(barHeight(600_000)).toBe(27)
+  expect(barHeight(10_000)).toBeGreaterThan(barHeight(1000))
+  const svg = pulse([{ kind: 'read', ms: 100 }, { kind: 'run', ms: 30_000, ok: false }], { kind: 'edit', ms: 2000 }, false, 200, '#fff')
+  expect(svg.match(/<rect /g)?.length).toBe(4)
+  expect(svg).toContain('#a68cff')
+  expect(svg).toContain('#ef6b5b')
+  expect(svg).toContain('<animate attributeName="opacity"')
+  expect(pulse([], null, true, 200, '#e07a52')).toContain('<circle')
+})
+
+test('background work is listed from the calls that start it and the engine word at Stop', () => {
+  const b = bgStarted('Bash', { run_in_background: true, description: 'Render the reel', command: 'npm run render' }, 'Command running in background with ID: b7x9k2', 1000, 'tu1')
+  expect(b).toEqual({ id: 'b7x9k2', kind: 'shell', label: 'Render the reel', at: 1000 })
+  expect(bgStarted('Bash', { command: 'ls' }, '', 1000, 'tu2')).toBeNull()
+  const w = bgStarted('ScheduleWakeup', { delaySeconds: 600, reason: 'Check CI' }, '', 1000, 'tu3')
+  expect(w?.until).toBe(601_000)
+  const after = bgFromStop([{ id: 'b7x9k2', type: 'shell', description: 'Render the reel' }], [{ id: 'c1', recurring: false, prompt: 'go on' }], [b!, w!], 5000)
+  expect(after.map(x => [x.kind, x.at, x.until ?? null])).toEqual([['shell', 1000, null], ['wakeup', 1000, 601_000]])
+  expect(bgAfterPrompt(after, '<task-notification><task-id>b7x9k2</task-id><status>completed</status></task-notification>', 6000).map(x => x.kind)).toEqual(['wakeup'])
+  expect(bgAfterPrompt(after, '<task-notification>', 601_000)).toEqual([after[0]!])
+})
+
+test('background work shows in the Now card while it runs', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'Render it' } as any)
+  await ($ as any).turn.start({ text: 'Render it', turnId: 't1' })
+  await $.tool.call({ tool: 'Bash', command: 'npm run render', description: 'Render the reel', run_in_background: true, tool_use_id: 'b1' } as any)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const all = await texts(ui)
+  expect(all.some(t => /Also running · 1/.test(t))).toBe(true)
+  expect(all.some(t => t === 'Render the reel')).toBe(true)
+  await ui.unmount()
+  // The turn ends while the render runs on: the map says what it waits on, not Done.
+  await ($ as any).turn.complete({ answer: '', durationMs: 5, isAborted: false, turnId: 't1', reason: 'answer' })
+  const after = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const later = await texts(after)
+  expect(later.some(t => /^Waiting on background work · 1/.test(t))).toBe(true)
+  expect(later.some(t => /^Done/.test(t))).toBe(false)
+  await after.unmount()
+})
+
+test('an edit outside git keeps its real line number, or none when it cannot be told', () => {
+  expect(lineOf('one\ntwo\nthree\nfour', 'three')).toBe(3)
+  expect(lineOf('one', '')).toBe(0)
+  const l = settle({ ...EMPTY }, { id: 'e', tool: 'Edit', args: { file_path: '/tmp/a.txt', old_string: 'x\ny', new_string: 'x\nz' }, kind: 'edit', label: 'Editing a.txt', at: 1, ok: true, text: '', agent: null, line: 40 }, 2)
+  const rows = diffRows(l.touches[0]!.diff)
+  expect(rows.map(r => [r.kind, r.num])).toEqual([['ctx', 40], ['del', 41], ['add', 41]])
+  const unknown = settle({ ...EMPTY }, { id: 'e', tool: 'Edit', args: { file_path: '/tmp/a.txt', old_string: 'y', new_string: 'z' }, kind: 'edit', label: 'Editing a.txt', at: 1, ok: true, text: '', agent: null }, 2)
+  expect(diffRows(unknown.touches[0]!.diff).map(r => r.num)).toEqual([null, null])
+})
+
+test('a pull request reads as merged, failing, running or passing', () => {
+  const run = (rolls: unknown[], state = 'OPEN') => prStatusOf(JSON.stringify({ state, isDraft: false, statusCheckRollup: rolls }), 1)
+  expect(run([], 'MERGED')).toEqual({ state: 'MERGED', checks: 'none', failing: 0, at: 1 })
+  expect(run([{ status: 'COMPLETED', conclusion: 'FAILURE' }, { status: 'COMPLETED', conclusion: 'SUCCESS' }])?.checks).toBe('fail')
+  expect(run([{ status: 'IN_PROGRESS', conclusion: '' }])?.checks).toBe('pending')
+  expect(run([{ state: 'SUCCESS' }, { status: 'COMPLETED', conclusion: 'SKIPPED' }])?.checks).toBe('pass')
+  expect(prWords(run([{ status: 'COMPLETED', conclusion: 'FAILURE' }])!)).toEqual({ label: '1 check failing', tone: 'fail' })
+  expect(prStatusOf('not json', 1)).toBeNull()
+})
+
+test('new files commands made are counted line by line', () => {
+  expect(parseCounts('/r/out/a.txt:12\n/r/b.bin:0\n/r/c:d.txt:3\n', '/r')).toEqual({ 'out/a.txt': 12, 'b.bin': 0, 'c:d.txt': 3 })
 })

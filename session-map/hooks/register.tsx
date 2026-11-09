@@ -1,13 +1,40 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { Kind, Ledger, PlanItem, Probe, Repo, TurnEnd, View } from '../types'
-import { badge, DONE, chevron, glyph, INK, liveDot, moodColor, QUIET, rings, RINGS_H, ROW, timelineRow, track, WAIT } from './art'
+import type { Bg, Kind, Ledger, PlanItem, Probe, Repo, TurnEnd, View } from '../types'
+import {
+  badge,
+  BG_INK,
+  bgIcon,
+  chevron,
+  DONE,
+  FAIL,
+  glyph,
+  INK,
+  META_H,
+  metaLine,
+  moodColor,
+  pulse,
+  PULSE_H,
+  QUIET,
+  RAIL_W,
+  railNode,
+  rings,
+  RINGS_H,
+  ROW,
+  span,
+  track,
+  WAIT,
+} from './art'
 import type { Mood } from './art'
-import { diffOf, gitTrouble, knownRoot, rebase, rootOf, scan } from './git'
+import { diffOf, gitTrouble, knownRoot, prOf, rebase, rootOf, scan } from './git'
 import {
   begin,
+  bgAfterPrompt,
+  bgFromStop,
+  bgStarted,
   changeGroups,
+  fileRows,
   clip,
   clock,
   diffRows,
@@ -17,6 +44,7 @@ import {
   headTurn,
   isPlumbing,
   lastN,
+  lineOf,
   newFileDiff,
   newTurn,
   pathOf,
@@ -30,6 +58,7 @@ import {
   str,
   withPlan,
   withWrap,
+  withBg,
   WRAP_TOOL,
 } from './model'
 import type { Chip, FileRow, Group, HistoryRow, Story } from './model'
@@ -63,11 +92,12 @@ const DOING: Record<Kind, string> = {
   other: 'Working',
 }
 
-const TONE = { done: DONE, warn: WAIT, plain: '#c9cdd3' } as const
+const TONE = { done: DONE, warn: WAIT, fail: FAIL, plain: '#c9cdd3' } as const
 /** Requests shown before "Show more": always drawn at full size. */
 const STORIES_SHOWN = 4
 
 let ticker: { cancel: () => void } | null = null
+let prTimer: { cancel: () => void } | null = null
 let pending: { cancel: () => void } | null = null
 let lastError = ''
 /** Turn ends heard for a turn other than the main one in progress, for the dev probe. */
@@ -133,6 +163,20 @@ export const register: Register = on => {
 
   on('prompt.submit', async ($, e, next) => {
     if (!e.isMeta && !e.command && e.text.trim()) await noteRequest($, e.text).catch(() => undefined)
+    if (e.text) await safely($, l => (l.background?.length ? { ...l, background: bgAfterPrompt(l.background, e.text, Date.now()) } : l))
+    return next(e)
+  })
+
+  // The main loop's Stop carries the engine's own list of work still in flight and wake-ups set.
+  on('classic.Stop', async ($, e, next) => {
+    const stop = e as unknown as { agent_id?: string; background_tasks?: unknown[]; session_crons?: unknown[] }
+    if (!stop.agent_id) {
+      await safely($, l => ({
+        ...l,
+        background: bgFromStop((stop.background_tasks ?? []) as never[], (stop.session_crons ?? []) as never[], l.background ?? [], Date.now()),
+      }))
+      keepTicking($)
+    }
     return next(e)
   })
 
@@ -188,9 +232,13 @@ export const register: Register = on => {
     } finally {
       const ok = ran !== null && !ran.deny && !ran.isError
       const text = ran && typeof ran.text === 'string' ? ran.text : ''
-      await safely($, l => settle(l, { id, tool: e.tool, args, kind, label, at, ok, text, agent }, Date.now()))
+      // Where the edit landed in the file, so its diff carries real line numbers.
+      const line = ok && e.tool === 'Edit' && path ? lineOf(await $.fs.read(path).catch(() => ''), str(args.new_string)) : 0
+      await safely($, l => settle(l, { id, tool: e.tool, args, kind, label, at, ok, text, agent, line }, Date.now()))
       if (path) void adopt($, path)
       if (kind === 'edit' || kind === 'run' || kind === 'publish') soon($)
+      if (ok && agent === null) await noteBackground($, e.tool, args, text, id)
+      if (ok && /\bgh\s+pr\s+create\b/.test(str(args.command))) watchPrs($)
     }
   })
 
@@ -216,9 +264,16 @@ export const register: Register = on => {
     const plan = l.plan ?? []
     const showPlan = plan.length > 0 && l.planTurn === headTurn(l)
     const place = planPlace(plan)
-    const helpers = l.live.filter(x => x.agent !== null || x.kind === 'agent')
     const shown = v.showAllRequests ? all : all.slice(0, STORIES_SHOWN)
     const links = all.flatMap(s => s.chips.filter(c => c.href || c.run)).slice(0, 4)
+    const mainLive = [...l.live].reverse().find(x => x.agent === null && x.kind !== 'agent') ?? null
+    const latest = all[0] ?? null
+    const beats = latest ? latest.steps : []
+    const isThinking = l.isWorking && !mainLive && !l.asking
+    const showPulse = Boolean(Svg && latest && (beats.length || l.isWorking))
+    const also = alongside(l, now)
+    const rowW = WIDE - RAIL_W - 4
+    const files = new Map(fileRows(l).map(r => [r.path, r]))
 
     const section = (title: string, note: string) => (
       <Box flexDirection="row" gap={1} alignItems="center">
@@ -248,6 +303,16 @@ export const register: Register = on => {
               </Text>
             </Box>
           </Box>
+          {showPulse && Svg ? (
+            <Svg
+              key="pulse"
+              source={pulse(beats, mainLive ? { kind: mainLive.kind, ms: now - mainLive.at } : null, isThinking, W, tint)}
+              width={W}
+              height={PULSE_H}
+              alt={pulseAlt(latest)}
+              isInteractive
+            />
+          ) : null}
           {showPlan ? (
             <Box flexDirection="column" gap={0}>
               {Svg ? <Svg source={track(plan, W, hero.isLive ? tint : DONE)} width={W} height={8} alt={planAlt(plan)} isInteractive /> : null}
@@ -257,12 +322,29 @@ export const register: Register = on => {
               </Text>
             </Box>
           ) : null}
-          {helpers.length ? (
-            <Box flexDirection="row" gap={1} alignItems="center">
-              {Svg ? <Svg source={liveDot(INK.agent)} width={10} height={10} alt="helpers working" /> : null}
-              <Text size="footnote" color={INK.agent}>
-                {`${helpers.length} helper${helpers.length === 1 ? '' : 's'} working`}
+          {also.length ? (
+            <Box key="also" flexDirection="column" gap={0}>
+              <Text size="caption" dimColor>
+                {`Also running · ${also.length}`}
               </Text>
+              {also.slice(0, 5).map(b => (
+                <Box key={`bg:${b.id}`} flexDirection="row" gap={1} alignItems="center">
+                  {Svg ? <Svg source={bgIcon(b.kind)} width={16} height={16} alt={b.kind} isInteractive /> : null}
+                  <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                    <Text size="footnote" color="#d6d6d6" wrap="truncate-end">
+                      {b.label}
+                    </Text>
+                  </Box>
+                  <Text size="footnote" color={BG_INK[b.kind] ?? QUIET} tabular>
+                    {b.until != null ? `in ${span(b.until - now)}` : span(now - b.at)}
+                  </Text>
+                </Box>
+              ))}
+              {also.length > 5 ? (
+                <Text size="caption" dimColor>
+                  {`and ${also.length - 5} more`}
+                </Text>
+              ) : null}
             </Box>
           ) : null}
         </Box>
@@ -274,26 +356,44 @@ export const register: Register = on => {
         {all.length ? (
           <Box key="chat" flexDirection="column" gap={1}>
             {section('This chat', `${all.length} request${all.length === 1 ? '' : 's'}`)}
-            {Svg ? (
-              <Box flexDirection="column" gap={0}>
-                {shown.map((s, i) => (
-                  <Svg
-                    key={`story:${s.n}`}
-                    source={timelineRow(s, i > 0, i < shown.length - 1, WIDE, tint)}
-                    width={WIDE}
-                    height={ROW}
-                    alt={s.text}
-                    isInteractive
-                  />
-                ))}
-              </Box>
-            ) : (
-              shown.map(s => (
-                <Text key={`story:${s.n}`} wrap="truncate-end">
-                  {`${s.isNow ? 'now' : clock(s.at)} · ${s.text}`}
-                </Text>
-              ))
-            )}
+            <Box flexDirection="column" gap={0}>
+              {shown.map((s, i) => {
+                const isOpen = v.openRequest === s.n
+                const dur = s.ms !== null ? span(s.ms) : ''
+                const press = tap($, () => toggleRequest($, s.n))
+                return (
+                  <Box key={`story:${s.n}`} flexDirection="column" gap={0}>
+                    {Svg ? (
+                      <Box flexDirection="row" gap={0}>
+                        <Svg source={railNode(s, i > 0, i < shown.length - 1 && !isOpen, tint)} width={RAIL_W} height={ROW} alt={nodeAlt(s)} isInteractive />
+                        <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} gap={0}>
+                          <Box flexDirection="row" gap={1} alignItems="center">
+                            <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                              <Button key={pressKey(`req:${s.n}`)} plain onPress={press} hover={{ color: '#ffffff' }}>
+                                <Text weight={s.isNow || isOpen ? 'semibold' : 'medium'} color={s.isNow || isOpen ? '#ffffff' : '#e3e3e3'} wrap="truncate-end">
+                                  {s.text}
+                                </Text>
+                              </Button>
+                            </Box>
+                            {dur ? (
+                              <Text size="footnote" color={s.isNow ? tint : QUIET} tabular>
+                                {dur}
+                              </Text>
+                            ) : null}
+                          </Box>
+                          <Svg source={metaLine(s, rowW, tint)} width={rowW} height={META_H} alt={s.work || 'No tool steps'} />
+                        </Box>
+                      </Box>
+                    ) : (
+                      <Button key={pressKey(`req:${s.n}`)} plain onPress={press}>
+                        <Text wrap="truncate-end">{`${s.isNow ? 'now' : clock(s.at)} · ${s.text}`}</Text>
+                      </Button>
+                    )}
+                    {isOpen ? requestCard($, s, v, files, W, tint, { Box, Text, Button, Link, Svg }) : null}
+                  </Box>
+                )
+              })}
+            </Box>
             {all.length > STORIES_SHOWN ? (
               moreToggle(
                 'all-requests',
@@ -306,7 +406,7 @@ export const register: Register = on => {
             ) : null}
             {links.length ? (
               <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-                {links.map(c => chipView($, c, v, { Box, Text, Button, Link }))}
+                {links.map(c => chipView($, c, v, { Box, Text, Button, Link }, 'links:'))}
               </Box>
             ) : null}
           </Box>
@@ -364,6 +464,27 @@ function heroOf(l: Ledger, last: Story | null, now: number): Hero {
     const lastEnd = l.steps.reduce((m, x) => (x.agent === null && x.at >= from ? Math.max(m, x.at + x.ms) : m), from)
     return { mood: 'thinking', eyebrow: `Thinking · ${since(now - lastEnd)}`, headline: plan.current ? plan.current.text : 'Working out the next step', isLive: true }
   }
+  // The turn ended but its work goes on: say what it waits on, not "Done".
+  const after = l.isWorking ? [] : alongside(l, now)
+  const running = after.filter(b => b.kind !== 'wakeup')
+  if (running.length) {
+    const one = running[0] as Bg
+    return {
+      mood: one.kind === 'shell' ? 'run' : one.kind === 'monitor' ? 'read' : 'agent',
+      eyebrow: `Waiting on background work · ${running.length}`,
+      headline: running.length === 1 ? clip(one.label, 110) : `${running.length} jobs running in the background`,
+      isLive: true,
+    }
+  }
+  const wake = after.find(b => b.kind === 'wakeup')
+  if (wake) {
+    return {
+      mood: 'ready',
+      eyebrow: wake.until != null ? `Picks up again in ${span(wake.until - now)}` : 'Picks up again later',
+      headline: firstSentence(last?.recap ?? '') || clip(wake.label, 110),
+      isLive: false,
+    }
+  }
   if (!last) return { mood: 'ready', eyebrow: 'Ready', headline: 'Waiting for your first request', isLive: false }
   const took = last.ms != null ? ` · ${since(last.ms)}` : ''
   if (last.end === 'aborted') return { mood: 'stopped', eyebrow: `Stopped${took}`, headline: 'You stopped the last request', isLive: false }
@@ -388,6 +509,92 @@ function doneLine(s: Story): string {
   return s.work ? s.work.charAt(0).toUpperCase() + s.work.slice(1) : 'Answered'
 }
 
+/** Everything running beside the main loop: helpers it waits on, then background work and wake-ups. */
+function alongside(l: Ledger, now: number): Bg[] {
+  const helpers: Bg[] = l.live
+    .filter(x => x.agent === null && x.kind === 'agent')
+    .map(x => ({ id: x.id, kind: 'helper' as const, label: x.label.replace(/^Helper: /, ''), at: x.at }))
+  const bg = (l.background ?? []).filter(b => b.until == null || b.until > now - 60_000)
+  return [...helpers, ...bg]
+}
+
+function pulseAlt(s: Story | null): string {
+  if (!s) return ''
+  return s.work ? `This request so far: ${s.work}` : 'No steps yet'
+}
+
+function nodeAlt(s: Story): string {
+  if (s.isNow) return 'Working on it now'
+  if (s.end === 'aborted') return 'Stopped'
+  if (s.end === 'error' || s.end === 'refusal') return 'Ended early'
+  return s.ask ? 'Left you a question' : 'Done'
+}
+
+/** Files shown in an open request before the count of the rest. */
+const CARD_FILES = 6
+
+/**
+ * One request opened: its rhythm as a heartbeat, what Claude did and how long it took, its recap
+ * and question, the files it changed (each opens its diff), the commits it made, and its links.
+ */
+function requestCard($: EngineInterface, s: Story, v: View, files: Map<string, FileRow>, width: number, live: string, el: Els) {
+  const { Box, Text, Svg } = el
+  const scope = `req${s.n}:`
+  const rows = s.files.map(p => files.get(p)).filter((r): r is FileRow => Boolean(r))
+  const chips = s.chips.filter(c => c.href || c.run)
+  const facts = [s.work, s.ms !== null ? `${span(s.ms)} of work` : ''].filter(Boolean).join(' · ')
+  return (
+    <Box key={`card:${s.n}`} flexDirection="column" gap={1} padding={1} marginTop={1} marginBottom={1} backgroundColor="#232427" borderStyle="round" borderColor="#34363a">
+      {s.text.length > 48 ? (
+        <Text size="footnote" color="#c9ccd3" wrap="wrap">
+          {s.text}
+        </Text>
+      ) : null}
+      {Svg && s.steps.length ? <Svg source={pulse(s.steps, null, false, width - 8, live)} width={width - 8} height={PULSE_H} alt={facts} isInteractive /> : null}
+      {facts ? (
+        <Text size="caption" dimColor>
+          {facts}
+        </Text>
+      ) : null}
+      {s.recap ? (
+        <Text size="footnote" color="#e6e6e6" wrap="wrap">
+          {s.recap}
+        </Text>
+      ) : null}
+      {s.ask ? (
+        <Text size="footnote" color={WAIT} wrap="wrap">
+          {`Asked you: ${s.ask}`}
+        </Text>
+      ) : null}
+      {rows.length ? (
+        <Box flexDirection="column" gap={1}>
+          {rows.slice(0, CARD_FILES).map(r => fileLine($, r, v, el, scope))}
+          {rows.length > CARD_FILES ? (
+            <Text size="caption" dimColor>
+              {`and ${rows.length - CARD_FILES} more, under Changes`}
+            </Text>
+          ) : null}
+        </Box>
+      ) : null}
+      {s.commitList.length ? (
+        <Box flexDirection="column" gap={0}>
+          {s.commitList.slice(0, 6).map(c => (
+            <Text key={`commit:${c.sha}`} size="footnote" wrap="truncate-end">
+              <Text color={c.isPushed ? DONE : WAIT} mono>{c.sha.slice(0, 7)}</Text>
+              <Text color="#d6d6d6">{` ${c.subject}`}</Text>
+            </Text>
+          ))}
+        </Box>
+      ) : null}
+      {chips.length ? (
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+          {chips.map(c => chipView($, c, v, el, scope))}
+        </Box>
+      ) : null}
+    </Box>
+  )
+}
+
 function vitalsAlt(l: Ledger): string {
   const v = l.vitals
   if (!v) return ''
@@ -402,22 +609,28 @@ function planAlt(plan: PlanItem[]): string {
 
 type Els = { Box: any; Text: any; Button: any; Link?: any; Svg?: any }
 
-function chipView($: EngineInterface, c: Chip, v: View, el: Els) {
+function chipView($: EngineInterface, c: Chip, v: View, el: Els, scope: string) {
   const { Box, Text, Button, Link } = el
+  const key = `${scope}chip:${c.href ?? c.label}`
   if (c.href && Link) {
     return (
-      <Link key={`chip:${c.label}`} href={c.href}>
-        {`↗ ${c.label}`}
-      </Link>
+      <Box key={key} flexDirection="row" gap={1} alignItems="center">
+        <Link href={c.href}>{`↗ ${c.label}`}</Link>
+        {c.status ? (
+          <Text size="footnote" color={TONE[c.status.tone]}>
+            {c.status.label}
+          </Text>
+        ) : null}
+      </Box>
     )
   }
   return (
-    <Box key={`chip:${c.label}`} flexDirection="row" gap={1}>
+    <Box key={key} flexDirection="row" gap={1}>
       <Text size="footnote" color={TONE[c.tone]}>
         {c.label}
       </Text>
       {c.run ? (
-        <Button key={pressKey(`copy:${c.label}`)} plain onPress={tap($, (press: { surface: string }) => copyRun($, c.run ?? '', press.surface))}>
+        <Button key={pressKey(`${scope}copy:${c.label}`)} plain onPress={tap($, (press: { surface: string }) => copyRun($, c.run ?? '', press.surface))}>
           <Text size="footnote" color={INK.run}>
             {v.copied === c.run ? 'Copied' : 'Copy run command'}
           </Text>
@@ -495,7 +708,7 @@ function groupLines($: EngineInterface, g: Group, v: View, el: Els) {
       </Box>
       {isOpen ? (
         <Box flexDirection="column" gap={1} paddingLeft={2} paddingTop={1}>
-          {shown.map(r => fileLine($, r, v, { Box, Text, Button, Svg }))}
+          {shown.map(r => fileLine($, r, v, { Box, Text, Button, Svg }, ''))}
           {files.length > FILES_SHOWN ? (
             moreToggle(
               `more-files:${g.key}`,
@@ -527,18 +740,19 @@ function shortDir(dir: string): string {
   return parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : parts.join('/')
 }
 
-function fileLine($: EngineInterface, r: FileRow, v: View, el: Els) {
+function fileLine($: EngineInterface, r: FileRow, v: View, el: Els, scope: string) {
   const { Box, Text, Button, Svg } = el
-  const isOpen = v.openPath === r.path
+  const at = `${scope}${r.path}`
+  const isOpen = v.openPath === at
   const word = r.isDeleted ? 'deleted' : r.state === 'new' ? 'new' : r.state === 'editing' ? 'editing now' : ''
   const color = r.isDeleted ? QUIET : r.state === 'editing' ? INK.edit : '#e8e8e8'
   const wasOpened = v.opened === r.path
   return (
-    <Box key={`file:${r.path}`} flexDirection="column" gap={0}>
+    <Box key={`file:${at}`} flexDirection="column" gap={0}>
       <Box flexDirection="row" gap={1} alignItems="center">
         {Svg ? <Svg source={badge(r.name)} width={30} height={18} alt={r.name} /> : null}
         <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} gap={0}>
-          <Button key={pressKey(`open:${r.path}`)} plain onPress={tap($, () => openFile($, r))}>
+          <Button key={pressKey(`open:${at}`)} plain onPress={tap($, () => openFile($, r, at))}>
             <Text color={color} weight="medium" wrap="truncate-end">
               {r.name}
             </Text>
@@ -556,14 +770,14 @@ function fileLine($: EngineInterface, r: FileRow, v: View, el: Els) {
         ) : null}
         {r.isDeleted ? null : (
           // A Button holds text alone (a drawn icon cannot take the press), so the edit icon is a glyph.
-          <Button key={pressKey(`edit:${r.path}`)} plain dimColor onPress={tap($, () => openInEditor($, r.path))}>
+          <Button key={pressKey(`edit:${at}`)} plain dimColor onPress={tap($, () => openInEditor($, r.path))}>
             <Text color={wasOpened ? DONE : '#9fbfff'}>{wasOpened ? '✓' : '✎'}</Text>
           </Button>
         )}
       </Box>
       {isOpen ? (
         v.openDiff || r.diff ? (
-          diffView(r.path, v.openDiff || r.diff, el)
+          diffView(at, v.openDiff || r.diff, el)
         ) : (
           <Text size="caption" dimColor>
             No line changes to show.
@@ -644,6 +858,7 @@ async function boot($: EngineInterface) {
     await adopt($, `${cwd}/.`)
     // A reload keeps the ledger's repos from older code: scan them again so new fields fill in at once.
     await rescan($)
+    if (watched(await read($, ledger), Date.now()).length) watchPrs($)
   } catch (err) {
     lastError = `boot: ${String(err)}`
   }
@@ -757,6 +972,7 @@ async function restore($: EngineInterface) {
       })
     }
     await rescan($)
+    if (watched(await read($, ledger), Date.now()).length) watchPrs($)
   } catch (err) {
     lastError = `restore: ${String(err)}`
   }
@@ -764,10 +980,12 @@ async function restore($: EngineInterface) {
 
 async function startTurn($: EngineInterface, turnId: string) {
   await safely($, l => ({ ...l, isWorking: true, mainTurn: turnId, startedAt: Date.now() }))
-  if (!ticker) {
-    // Redraw every few seconds while working so the elapsed times move.
-    ticker = $.clock.every(3000, () => void bump($))
-  }
+  keepTicking($)
+}
+
+/** Redraw every few seconds while anything runs (the turn, background work) so its times move. */
+function keepTicking($: EngineInterface) {
+  if (!ticker) ticker = $.clock.every(3000, () => void bump($))
 }
 
 async function endTurn($: EngineInterface, turnId: string, reason: TurnEnd) {
@@ -794,16 +1012,66 @@ async function endTurn($: EngineInterface, turnId: string, reason: TurnEnd) {
       i === l.turns.length - 1 ? { ...t, endedAt: now, end: reason, workMs: (t.workMs ?? 0) + (now - (l.startedAt ?? t.at)) } : t,
     ),
   }))
-  ticker?.cancel()
-  ticker = null
 }
 
 async function bump($: EngineInterface) {
   try {
+    const l = await read($, ledger)
+    if (!l.isWorking && !l.live.length && !(l.background ?? []).length) {
+      ticker?.cancel()
+      ticker = null
+    }
     await update($, view, x => ({ ...x, tick: x.tick + 1 }))
   } catch {
     // A missed redraw is harmless.
   }
+}
+
+/** A call that left work running past itself goes on the list; a cancelled wake-up comes off. */
+async function noteBackground($: EngineInterface, tool: string, args: Record<string, unknown>, text: string, id: string) {
+  if (tool === 'ScheduleWakeup' && args.stop === true) {
+    await safely($, l => ({ ...l, background: (l.background ?? []).filter(b => b.kind !== 'wakeup') }))
+    return
+  }
+  const b = bgStarted(tool, args, text, Date.now(), id)
+  if (!b) return
+  await safely($, l => ({ ...l, background: withBg(l.background ?? [], b) }))
+  keepTicking($)
+}
+
+/** Pull requests worth asking GitHub about: open, and either recent or with checks still running. */
+function watched(l: Ledger, now: number) {
+  return l.results.filter(
+    r => r.kind === 'pr' && r.href && r.pr?.state !== 'MERGED' && r.pr?.state !== 'CLOSED' && (now - r.at < 6 * 3600_000 || r.pr?.checks === 'pending'),
+  )
+}
+
+/** Asks GitHub where this chat's pull requests stand now, and every minute while any is worth watching. */
+function watchPrs($: EngineInterface) {
+  void checkPrs($)
+  if (!prTimer) prTimer = $.clock.every(60_000, () => void checkPrs($))
+}
+
+async function checkPrs($: EngineInterface) {
+  try {
+    const now = Date.now()
+    const list = watched(await read($, ledger), now)
+    if (!list.length) {
+      prTimer?.cancel()
+      prTimer = null
+      return
+    }
+    for (const r of list) {
+      const pr = await prOf($, r.href as string, now)
+      if (pr) await safely($, l => ({ ...l, results: l.results.map(x => (x.href === r.href && x.kind === 'pr' ? { ...x, pr } : x)) }))
+    }
+  } catch {
+    // Offline or signed out: the link still works.
+  }
+}
+
+async function toggleRequest($: EngineInterface, n: number) {
+  await update($, view, x => ({ ...x, openRequest: x.openRequest === n ? null : n }))
 }
 
 async function note($: EngineInterface, p: Probe) {
@@ -949,13 +1217,13 @@ async function openInEditor($: EngineInterface, path: string) {
   $.clock.after(2000, () => void update($, view, x => (x.opened === path ? { ...x, opened: null } : x)))
 }
 
-async function openFile($: EngineInterface, r: FileRow) {
+async function openFile($: EngineInterface, r: FileRow, at: string) {
   const v = await read($, view)
-  if (v.openPath === r.path) {
+  if (v.openPath === at) {
     await update($, view, x => ({ ...x, openPath: null, openDiff: null }))
     return
   }
-  await update($, view, x => ({ ...x, openPath: r.path, openDiff: null }))
+  await update($, view, x => ({ ...x, openPath: at, openDiff: null }))
   let diff = ''
   if (r.repo && r.state !== 'read') {
     const rel = r.path.slice(r.repo.root.length + 1)
@@ -968,7 +1236,7 @@ async function openFile($: EngineInterface, r: FileRow) {
       .then(text => newFileDiff(text.replace(/\r?\n$/, '').split(/\r?\n/), r.path, DIFF_ROWS))
       .catch(() => '')
   }
-  if (diff) await update($, view, x => (x.openPath === r.path ? { ...x, openDiff: diff } : x))
+  if (diff) await update($, view, x => (x.openPath === at ? { ...x, openDiff: diff } : x))
 }
 
 async function copyRun($: EngineInterface, text: string, surface: string) {
