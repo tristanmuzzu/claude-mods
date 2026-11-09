@@ -9,17 +9,22 @@
 //     redraw starts its animation over, so the thinking dots kept snapping
 //     back. So each drawing is a stack of frames: a new markup loads on top of
 //     the old with an opaque ground and fades in; the old leaves once the new
-//     has had time to paint. Unchanged markup keeps its frame, and its motion.
+//     has had time to paint and finish fading in. Unchanged markup keeps its
+//     frame, and its motion.
+//   - A frame also reloads when any other prop changes (an `alt` holding a
+//     timer reloaded the icon every second), an empty `alt` is not drawn, and
+//     a sibling part coming or going rebuilds the frames beside it: frames keep
+//     fixed props, and parts are hidden rather than removed.
 //   - A step of a few hundred milliseconds swung the card to it and back.
 //     The card shows a step only once it has run for HOLD_MS (model.ts), and
 //     holds what it shows for DWELL_MS unless what comes next needs you.
 
 /** How long the card keeps what it shows before a calmer change may replace it. */
 export const DWELL_MS = 900
-/** How long a frame's markup takes to load and paint, with room to spare: the old layer stays under it this long. */
-export const LAYER_MS = 700
-/** How long new words take to come up to full strength. */
-export const APPEAR_MS = 260
+/** How long a new frame takes to load (up to ~270ms) and fade in (CROSS_MS), with room to spare: the old layer stays under it this long. */
+export const LAYER_MS = 1100
+/** How long a new frame fades in over the old one: the cross-fade between two drawings. */
+export const CROSS_MS = 450
 
 /** One frame of a stacked drawing: its markup, the key that keeps it alive, and when it came. */
 export type Layer = { key: string; src: string; at: number }
@@ -49,7 +54,7 @@ export function isSettling(layers: Layer[], now: number): boolean {
 export function layered(svg: string, ground: string, fadeMs: number): string {
   const at = svg.indexOf('>')
   if (at < 0) return svg
-  const style = fadeMs > 0 ? `<style>svg{animation:in ${fadeMs}ms ease-out both}@keyframes in{from{opacity:0}}</style>` : ''
+  const style = fadeMs > 0 ? `<style>svg{animation:in ${fadeMs}ms ease-in-out both}@keyframes in{from{opacity:0}}</style>` : ''
   return `${svg.slice(0, at + 1)}${style}<rect width="100%" height="100%" fill="${ground}"/>${svg.slice(at + 1)}`
 }
 
@@ -69,8 +74,3 @@ export function dwell<H>(was: Shown<H> | null, hero: H, id: string, isUrgent: bo
   return { shown: was, wait: left }
 }
 
-/** How far new words have come up, 0 to 1, `ms` after they changed. */
-export function appear(ms: number): number {
-  const t = Math.min(1, Math.max(0, ms / APPEAR_MS))
-  return 1 - (1 - t) ** 3
-}

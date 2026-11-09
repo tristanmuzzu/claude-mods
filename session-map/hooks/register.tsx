@@ -28,8 +28,8 @@ import {
   WAIT,
 } from './art'
 import type { Mood } from './art'
-import { colorAt, FADE_FRAME_MS, follow, isFading, mix } from './fade'
-import { appear, dwell, isSettling, layered, stack } from './motion'
+import { colorAt, FADE_FRAME_MS, follow, isFading } from './fade'
+import { CROSS_MS, dwell, isSettling, layered, stack } from './motion'
 import type { Layer, Shown } from './motion'
 import type { Fade } from './fade'
 import { ago, appChats, chatRows, noteOf, seenOf, sharedOf } from './chats'
@@ -136,9 +136,8 @@ const layers: Record<'glyph' | 'pulse' | 'track', Layer[]> = { glyph: [], pulse:
 /** Each stacked drawing's fixed `alt`: never empty, never changing, so its frames draw and stay. */
 const SLOT_NAME: Record<keyof typeof layers, string> = { glyph: 'Activity icon', pulse: 'Steps so far', track: 'Plan progress' }
 let layerSeq = 0
-/** What the Now card shows (it may lag the truth by up to DWELL_MS), and when its words changed. */
+/** What the Now card shows: it may lag the truth by up to DWELL_MS. */
 let shownHero: Shown<Hero> | null = null
-let words: { id: string; at: number } | null = null
 /** When a redraw is already due, so a wait asked for twice sets one timer. */
 let wakeAt = 0
 /**
@@ -325,9 +324,6 @@ export const register: Register = on => {
     shownHero = held.shown
     if (held.wait > 0) wake($, held.wait)
     const hero = held.shown.hero
-    if (!words || words.id !== held.shown.id) words = { id: held.shown.id, at: now }
-    // New words come up from dim rather than cutting in.
-    const up = 0.35 + 0.65 * appear(now - words.at)
     // `tint` is the mood's colour, for the drawings (each change cross-fades as a new layer);
     // `tintNow` is where the fade to it stands, for the card's texts and border.
     const tint = moodColor(hero.mood)
@@ -390,12 +386,12 @@ export const register: Register = on => {
         {/* ---------------- Now */}
         <Box key="now" flexDirection="column" gap={1} padding={1} backgroundColor="#232427" borderStyle="round" borderColor={colorAt(fades.border as Fade, now)}>
           <Box flexDirection="row" gap={1} alignItems="center">
-            {stacked('glyph', glyph(hero.mood, hero.isLive), 56, 56, `${hero.eyebrow}: ${hero.headline}`, 220)}
+            {stacked('glyph', glyph(hero.mood, hero.isLive), 56, 56, `${hero.eyebrow}: ${hero.headline}`, CROSS_MS)}
             <Box flexDirection="column" flexShrink={1} minWidth={0} gap={0}>
-              <Text size="caption" weight="bold" color={mix(CARD, tintNow, up)}>
+              <Text size="caption" weight="bold" color={tintNow}>
                 {hero.eyebrow}
               </Text>
-              <Text size="heading" weight="semibold" wrap="wrap" color={mix(CARD, '#ececec', up)}>
+              <Text size="heading" weight="semibold" wrap="wrap">
                 {hero.headline}
               </Text>
             </Box>
@@ -416,11 +412,11 @@ export const register: Register = on => {
               W,
               PULSE_H,
               pulseAlt(latest) || 'No steps yet',
-              140,
+              CROSS_MS,
             )}
           </Box>
           <Box key="plan-row" flexDirection="column" gap={0} display={showPlan ? 'flex' : 'none'}>
-            {stacked('track', track(plan, W, hero.isLive ? tint : DONE), W, 8, planAlt(plan) || 'No plan', 140)}
+            {stacked('track', track(plan, W, hero.isLive ? tint : DONE), W, 8, planAlt(plan) || 'No plan', CROSS_MS)}
             <Text size="caption" dimColor wrap="truncate-end">
               {place.current ? `${place.index + 1} of ${place.total} · ` : `${place.done} of ${place.total} done`}
               {place.current ? <Text color="#e6e6e6">{place.current.text}</Text> : null}
@@ -1226,8 +1222,7 @@ async function startTurn($: EngineInterface, turnId: string) {
 function inMotion(now: number): boolean {
   return (
     Object.values(fades).some(f => isFading(f, now)) ||
-    Object.values(layers).some(x => isSettling(x, now)) ||
-    (words !== null && appear(now - words.at) < 1)
+    Object.values(layers).some(x => isSettling(x, now))
   )
 }
 

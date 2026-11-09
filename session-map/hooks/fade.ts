@@ -6,10 +6,10 @@
 // clean rose rather than a muddy brown.
 
 /**
- * How long a fade lasts. Short, as the card's words and glyph shape change at once: a longer fade
- * (600ms was tried) leaves a step that runs under a second drawn in the colour of the one before.
+ * How long a fade lasts. The card now holds each state for at least DWELL_MS (motion.ts), so a
+ * fade this long always finishes in the colour of the step it is for; 300ms read as abrupt.
  */
-export const FADE_MS = 300
+export const FADE_MS = 500
 /** Redraw period while a fade runs: 25 frames a second. */
 export const FADE_FRAME_MS = 40
 

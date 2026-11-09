@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { barHeight, glyph, mark, metaLine, pulse, railNode, rings, track } from './art'
 import { colorAt, ease, FADE_MS, follow, isFading, mix } from './fade'
-import { appear, dwell, DWELL_MS, layered, LAYER_MS, stack } from './motion'
+import { dwell, DWELL_MS, layered, LAYER_MS, stack } from './motion'
 import { appChats, chatRows, cleanTitle, isUnseen, noteOf, seenOf } from './chats'
 import { cutDiff, parseCounts, parseLog, parseStatus } from './git'
 import { applyPlan, bgAfterPrompt, heldLive, HOLD_MS, bgFromStop, bgStarted, changeGroups, clip, diffRows, EMPTY, fileRows, lineOf, newTurn, saidOf, place, prStatusOf, prWords, promptText, settle, stories } from './model'
@@ -920,7 +920,7 @@ test('a stacked drawing keeps its frame while unchanged and cross-fades a change
   expect(stack(s, 'B', 1000 + LAYER_MS - 1, key).map(x => x.src)).toEqual(['A', 'B'])
   expect(stack(s, 'B', 1000 + LAYER_MS, key).map(x => x.src)).toEqual(['B'])
   const l = layered('<svg width="4" height="4"><circle/></svg>', '#232427', 200)
-  expect(l).toBe('<svg width="4" height="4"><style>svg{animation:in 200ms ease-out both}@keyframes in{from{opacity:0}}</style><rect width="100%" height="100%" fill="#232427"/><circle/></svg>')
+  expect(l).toBe('<svg width="4" height="4"><style>svg{animation:in 200ms ease-in-out both}@keyframes in{from{opacity:0}}</style><rect width="100%" height="100%" fill="#232427"/><circle/></svg>')
 })
 
 test('the card holds what it shows for a moment, unless what comes next needs you', () => {
@@ -935,6 +935,4 @@ test('the card holds what it shows for a moment, unless what comes next needs yo
   expect(dwell(a.shown, 'asking', 'asking', true, 300).shown.hero).toBe('asking')
   // The same state with a newer timer is no change: it keeps its start.
   expect(dwell(a.shown, 'thinking 2s', 'thinking', false, 300).shown).toEqual({ hero: 'thinking 2s', id: 'thinking', at: 0 })
-  expect(appear(0)).toBe(0)
-  expect(appear(10_000)).toBe(1)
 })
