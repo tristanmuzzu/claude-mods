@@ -240,7 +240,7 @@ export const ROW = 56
  * rail runs into the rows above and below. Hover for the text and recap.
  */
 export function timelineRow(s: Story, hasAbove: boolean, hasBelow: boolean, width: number, live: string): string {
-  const node = s.isNow ? 'live' : s.end === 'aborted' || s.end === 'error' ? 'stopped' : s.ask ? 'ask' : s.ms !== null ? 'done' : 'quiet'
+  const node = s.isNow ? 'live' : s.end === 'aborted' || s.end === 'error' || s.end === 'refusal' ? 'stopped' : s.ask ? 'ask' : s.ms !== null ? 'done' : 'quiet'
   const railUp = hasAbove ? `<rect x="9" y="0" width="2" height="5" fill="#ffffff" fill-opacity="0.09"/>` : ''
   const railDown = hasBelow ? `<rect x="9" y="24" width="2" height="${ROW - 24}" fill="#ffffff" fill-opacity="0.09"/>` : ''
   const dot = `<g transform="translate(1 5) scale(1.25)">${markBody(node, live)}</g>`
@@ -272,7 +272,7 @@ export function timelineRow(s: Story, hasAbove: boolean, hasBelow: boolean, widt
 
 function clipTo(s: string, n: number): string {
   const one = s.replace(/\s+/g, ' ').trim()
-  return one.length > n ? `${one.slice(0, Math.max(1, n - 1))}…` : one
+  return one.length > n ? `${one.slice(0, Math.max(1, n - 1)).replace(/[\s.,;:…]+$/, '')}…` : one
 }
 
 function hhmm(t: number): string {

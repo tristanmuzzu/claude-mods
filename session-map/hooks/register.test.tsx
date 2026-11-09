@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { glyph, mark, rings, timelineRow, track } from './art'
 import { cutDiff, parseLog, parseStatus } from './git'
-import { applyPlan, changeGroups, diffRows, EMPTY, fileRows, place, promptText, stories } from './model'
+import { applyPlan, changeGroups, clip, diffRows, EMPTY, fileRows, newTurn, place, promptText, settle, stories } from './model'
 
 /** A pane Button by its key without the press count the pane adds to every key (see pressKey). */
 async function button(ui: { findAll: (q: { type: string }) => Promise<{ key: string | undefined; text?: string }[]> }, key: string) {
@@ -456,4 +456,59 @@ test('a chat the map missed is told again from its transcript', async ($, on) =>
   // The last request was stopped by hand; the first kept its recap.
   expect(all).toContain('Stopped')
   await ui.unmount()
+})
+
+test('requests keep their own numbers past the 120 the ledger keeps', () => {
+  let l = { ...EMPTY }
+  for (let i = 0; i < 125; i++) l = newTurn(l, `Request ${i + 1}`, 1000 + i) ?? l
+  expect(l.turns.length).toBe(120)
+  expect(new Set(l.turns.map(t => t.n)).size).toBe(120)
+  expect(l.turns[l.turns.length - 1]?.n).toBe(125)
+  const done = settle(l, { id: 'x', tool: 'Bash', args: { command: 'ls' }, kind: 'run', label: 'ls', at: 2000, ok: true, text: '', agent: null }, 2001)
+  expect(done.steps[0]?.turn).toBe(125)
+  expect(stories(done, 3000)[0]?.counts.run).toBe(1)
+})
+
+test('a commit counts once, on the request it landed in', () => {
+  const at = 1_700_000_000_000
+  const repo = {
+    root: PROJECT, name: 'claude-mods', branch: 'main', hasUpstream: true, ahead: 0, behind: 0, headAtStart: 'a', baseline: [],
+    files: [], commits: [{ sha: 'b', subject: 'second', at: at / 1000 + 100 }], scannedAt: 1,
+  }
+  const l = {
+    ...EMPTY,
+    turns: [
+      { n: 1, text: 'First', at, endedAt: at + 60_000 },
+      { n: 2, text: 'Second', at: at + 90_000, endedAt: at + 120_000 },
+    ],
+    repos: [repo],
+  }
+  // The commit at +100s is inside the first request's grace minute but after the second began.
+  const [second, first] = stories(l, at + 200_000)
+  expect(second?.commits).toBe(1)
+  expect(first?.commits).toBe(0)
+})
+
+test('an edited file git does not see is changed, not pushed', () => {
+  const l = {
+    ...EMPTY,
+    touches: [{ path: `${PROJECT}/ignored.log`, reads: 0, edits: 1, added: 3, removed: 0, isNew: false, at: 1, diff: '' }],
+    repos: [
+      {
+        root: PROJECT, name: 'claude-mods', branch: 'main', hasUpstream: true, ahead: 0, behind: 0, headAtStart: 'a', baseline: [],
+        files: [], changed: [], commits: [], scannedAt: 1,
+      },
+    ],
+  }
+  expect(fileRows(l).map(r => r.state)).toEqual(['changed'])
+  expect(changeGroups(l)[0]?.status).toBe('1 file changed, not tracked by git')
+})
+
+test('a busy repository keeps every older dirty file in its baseline', () => {
+  const status = ['## main', ...Array.from({ length: 450 }, (_, i) => `?? f${i}.txt`)].join('\n')
+  expect(parseStatus(status, '').files.length).toBe(450)
+})
+
+test('a clipped line ends in one ellipsis', () => {
+  expect(clip("I'm in a meeting rn.... back soon", 21)).toBe("I'm in a meeting rn…")
 })

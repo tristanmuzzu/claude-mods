@@ -22,6 +22,11 @@ async function git($: EngineInterface, cwd: string, args: string[]): Promise<str
   }
 }
 
+/** The root already found for `dir`: a string, null for no repository, undefined when not looked up yet. */
+export function knownRoot(dir: string): string | null | undefined {
+  return dir in roots ? (roots[dir] ?? null) : undefined
+}
+
 /** The repository root that holds `dir`, or null; remembered per folder. */
 export async function rootOf($: EngineInterface, dir: string): Promise<string | null> {
   if (dir in roots) return roots[dir] ?? null
@@ -39,6 +44,11 @@ export async function scan($: EngineInterface, root: string, was: Repo | null, n
   const head = ((await git($, root, ['rev-parse', 'HEAD'])) ?? '').trim()
   const headAtStart = was?.headAtStart ?? head
   const parsed = parseStatus(status, numstat)
+  // Every file dirty at the first look is older than the session, however many there are. Only the
+  // files kept are capped, and the session's own come first, so a busy repository cannot push them out.
+  const baseline = was ? was.baseline : parsed.files.map(f => f.rel)
+  const old = new Set(baseline)
+  const files = [...parsed.files.filter(f => !old.has(f.rel)), ...parsed.files.filter(f => old.has(f.rel))].slice(0, 400)
   // Line counts since the session started: what was committed since counts too.
   const sinceStat = headAtStart && head && head !== headAtStart ? ((await git($, root, ['diff', '--numstat', headAtStart])) ?? '') : numstat
   const changed = parseNumstat(sinceStat)
@@ -55,8 +65,8 @@ export async function scan($: EngineInterface, root: string, was: Repo | null, n
     ahead: parsed.ahead,
     behind: parsed.behind,
     headAtStart,
-    baseline: was ? was.baseline : parsed.files.map(f => f.rel),
-    files: parsed.files,
+    baseline,
+    files,
     changed,
     commits,
     scannedAt: now,
@@ -136,7 +146,7 @@ export function parseStatus(status: string, numstat: string) {
     rel = rel.replace(/^"(.*)"$/, '$1')
     return { rel, code, added: counts[rel]?.added ?? 0, removed: counts[rel]?.removed ?? 0 }
   })
-  return { branch, hasUpstream, ahead, behind, files: files.slice(0, 400) }
+  return { branch, hasUpstream, ahead, behind, files }
 }
 
 /** `git diff --numstat` lines as files with their counts (binary files count 0). */

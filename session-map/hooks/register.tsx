@@ -4,7 +4,7 @@ import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 import type { Kind, Ledger, PlanItem, Probe, Repo, TurnEnd, View } from '../types'
 import { badge, DONE, chevron, glyph, INK, liveDot, moodColor, QUIET, rings, RINGS_H, ROW, timelineRow, track, WAIT } from './art'
 import type { Mood } from './art'
-import { diffOf, gitTrouble, rebase, rootOf, scan } from './git'
+import { diffOf, gitTrouble, knownRoot, rebase, rootOf, scan } from './git'
 import {
   begin,
   changeGroups,
@@ -16,6 +16,7 @@ import {
   EMPTY,
   headTurn,
   isPlumbing,
+  lastN,
   newFileDiff,
   newTurn,
   pathOf,
@@ -178,6 +179,7 @@ export const register: Register = on => {
     const path = pathOf(args) || null
     const agent = e.agentId ?? null
     await safely($, l => begin(l, { id, kind, label, at, path, agent }))
+    if (path && kind === 'edit') await firstLook($, path)
 
     let ran: Awaited<ReturnType<typeof next>> | null = null
     try {
@@ -292,11 +294,6 @@ export const register: Register = on => {
                 </Text>
               ))
             )}
-            {links.length ? (
-              <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-                {links.map(c => chipView($, c, v, { Box, Text, Button, Link }))}
-              </Box>
-            ) : null}
             {all.length > STORIES_SHOWN ? (
               moreToggle(
                 'all-requests',
@@ -306,6 +303,11 @@ export const register: Register = on => {
                 { Box, Text, Button, Svg },
                 'center',
               )
+            ) : null}
+            {links.length ? (
+              <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+                {links.map(c => chipView($, c, v, { Box, Text, Button, Link }))}
+              </Box>
             ) : null}
           </Box>
         ) : null}
@@ -357,7 +359,10 @@ function heroOf(l: Ledger, last: Story | null, now: number): Hero {
     }
   }
   if (l.isWorking) {
-    return { mood: 'thinking', eyebrow: `Thinking · ${since(now - (l.startedAt ?? now))}`, headline: plan.current ? plan.current.text : 'Working out the next step', isLive: true }
+    // Since the last step of this turn ended: the turn's whole time is on its timeline row.
+    const from = l.startedAt ?? now
+    const lastEnd = l.steps.reduce((m, x) => (x.agent === null && x.at >= from ? Math.max(m, x.at + x.ms) : m), from)
+    return { mood: 'thinking', eyebrow: `Thinking · ${since(now - lastEnd)}`, headline: plan.current ? plan.current.text : 'Working out the next step', isLive: true }
   }
   if (!last) return { mood: 'ready', eyebrow: 'Ready', headline: 'Waiting for your first request', isLive: false }
   const took = last.ms != null ? ` · ${since(last.ms)}` : ''
@@ -616,13 +621,6 @@ function diffView(path: string, diff: string, el: Els) {
   )
 }
 
-function pickMain(l: Ledger): Repo | null {
-  if (!l.repos.length) return null
-  const lastEdit = [...l.touches].filter(t => t.edits > 0).sort((a, b) => b.at - a.at)[0]
-  const byEdit = lastEdit ? l.repos.find(r => lastEdit.path.startsWith(`${r.root}/`)) : undefined
-  return byEdit ?? l.repos.find(r => l.cwd === r.root || l.cwd.startsWith(`${r.root}/`)) ?? l.repos[0] ?? null
-}
-
 // ---------------------------------------------------------------- state changes
 
 type RawLimit = { kind: string; percentUsed: number; resetsAt?: string }
@@ -719,7 +717,7 @@ async function restore($: EngineInterface) {
   try {
     const l0 = await read($, ledger)
     const typed = await $.session.turns().catch(() => 0)
-    if (l0.turns.length > 0 && typed > 0 && l0.turns.length >= typed) return
+    if (l0.turns.length > 0 && typed > 0 && lastN(l0) >= typed) return
     const id = await $.session.id()
     const r = await $.process.run(['sh', '-c', HISTORY, 'session-history', id, HISTORY_JQ], { timeoutMs: 30000 })
     if (!r.stdout) {
@@ -738,7 +736,7 @@ async function restore($: EngineInterface) {
     let isRestored = false
     await safely($, l => {
       const told = replay(rows, l)
-      if (told.turns.length <= l.turns.length) return l
+      if (lastN(told) <= lastN(l)) return l
       isRestored = true
       since = told.turns[0]?.at ?? 0
       if (!l.isWorking) return told
@@ -751,10 +749,12 @@ async function restore($: EngineInterface) {
     for (const dir of new Set(l.touches.map(t => t.path.slice(0, t.path.lastIndexOf('/'))).slice(-40))) await adopt($, `${dir}/.`)
     // What changed in git since the chat began is its work, not only what changed since the map did.
     if (since) {
-      const followed = (await read($, ledger)).repos
-      const based: Repo[] = []
-      for (const repo of followed) based.push(await rebase($, repo, since))
-      await safely($, x => ({ ...x, repos: x.repos.map(r => based.find(b => b.root === r.root) ?? r) }))
+      await serial(async () => {
+        const followed = (await read($, ledger)).repos
+        const based: Repo[] = []
+        for (const repo of followed) based.push(await rebase($, repo, since))
+        await safely($, x => ({ ...x, repos: x.repos.map(r => based.find(b => b.root === r.root) ?? r) }))
+      })
     }
     await rescan($)
   } catch (err) {
@@ -817,8 +817,38 @@ async function note($: EngineInterface, p: Probe) {
   }
 }
 
+/**
+ * Git work one job at a time. A rescan reads the followed repositories, waits on git, then writes
+ * them back: run beside an adopt or the replay's rebase, it wrote over what they had just added.
+ */
+let gitLine: Promise<unknown> = Promise.resolve()
+function serial<T>(job: () => Promise<T>): Promise<T> {
+  const run = gitLine.then(job, job)
+  gitLine = run.catch(() => undefined)
+  return run
+}
+
+/**
+ * Before the first edit in a folder whose repository the map does not follow yet, look at git, so
+ * the baseline is taken before the edit and the file counts as this session's work. Bounded: a slow
+ * git lets the edit go ahead and finishes the look in the background.
+ */
+async function firstLook($: EngineInterface, path: string) {
+  const dir = path.slice(0, path.lastIndexOf('/')) || '/'
+  const root = knownRoot(dir)
+  if (root === null) return
+  if (root && (await read($, ledger)).repos.some(r => r.root === root)) return
+  // A folder the edit is about to create has no repository yet to ask; looking would remember "none".
+  if (!(await $.fs.stat(dir).catch(() => null))) return
+  await Promise.race([adopt($, path), new Promise<void>(done => $.clock.after(1500, () => done()))])
+}
+
 /** Finds the repository a path lives in and starts following it. */
-async function adopt($: EngineInterface, path: string) {
+function adopt($: EngineInterface, path: string) {
+  return serial(() => adoptNow($, path))
+}
+
+async function adoptNow($: EngineInterface, path: string) {
   try {
     const dir = path.slice(0, path.lastIndexOf('/')) || '/'
     const root = await rootOf($, dir)
@@ -843,13 +873,17 @@ function soon($: EngineInterface) {
   pending = $.clock.after(900, () => void rescan($))
 }
 
-async function rescan($: EngineInterface) {
+function rescan($: EngineInterface) {
+  return serial(() => rescanNow($))
+}
+
+async function rescanNow($: EngineInterface) {
   try {
     const l = await read($, ledger)
     const now = Date.now()
     const fresh: Repo[] = []
     for (const r of l.repos) fresh.push((await scan($, r.root, r, now)) ?? r)
-    await safely($, x => ({ ...x, repos: fresh }))
+    await safely($, x => ({ ...x, repos: x.repos.map(r => fresh.find(f => f.root === r.root) ?? r) }))
   } catch {
     // Try again after the next change.
   }

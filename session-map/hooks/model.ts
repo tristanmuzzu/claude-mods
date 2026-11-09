@@ -136,7 +136,7 @@ export function settle(l: Ledger, s: Settle, now: number): Ledger {
     kind,
     at: s.at,
     ms: Math.max(0, now - s.at),
-    turn: l.turns.length,
+    turn: lastN(l),
     label: s.ok ? s.label : `${s.label} (failed)`,
     agent: s.agent,
   }
@@ -301,7 +301,9 @@ export function fileRows(l: Ledger): FileRow[] {
     } else if (repo && since && !wasDirty) {
       state = repo.hasUpstream && repo.ahead === 0 ? 'pushed' : 'committed'
     } else if (repo && (t?.edits ?? 0) > 0) {
-      state = repo.commits.some(c => c.at * 1000 >= (t?.at ?? 0) - 120_000) || repo.commits.length > 0
+      // Git no longer sees a change. Dirty before the session and committed after the edit: the
+      // commit took it. Otherwise git ignores the file, or the edit was undone: changed, not shipped.
+      state = wasDirty && repo.commits.some(c => c.at * 1000 >= (t?.at ?? 0) - 120_000)
         ? repo.hasUpstream && repo.ahead === 0
           ? 'pushed'
           : 'committed'
@@ -407,7 +409,15 @@ export function withWrap(l: Ledger, args: Record<string, unknown>): Ledger {
 export function newTurn(l: Ledger, text: string, at: number): Ledger | null {
   const clean = promptText(text).slice(0, 240)
   if (!clean) return null
-  return { ...l, turns: [...l.turns, { n: l.turns.length + 1, text: clean, at, endedAt: null, auto: isAutomated(text) }].slice(-120) }
+  return { ...l, turns: [...l.turns, { n: lastN(l) + 1, text: clean, at, endedAt: null, auto: isAutomated(text) }].slice(-120) }
+}
+
+/**
+ * The newest request's number. Requests are numbered from the chat's start and the ledger keeps
+ * the last 120, so the count of those kept is not the number: past 120 every request would share one.
+ */
+export function lastN(l: Ledger): number {
+  return l.turns[l.turns.length - 1]?.n ?? 0
 }
 
 /** The app's own tools, which tell the turn's story rather than do its work. */
@@ -601,7 +611,9 @@ export function stories(l: Ledger, now: number): Story[] {
       const ns = new Set(g.map(t => t.n))
       const steps = l.steps.filter(s => ns.has(s.turn) && s.agent === null)
       const from = head.at
-      const to = (tail.endedAt ?? now) + 60_000
+      // A commit lands a moment after the turn that made it ends, but never inside the next request.
+      const next = groups[gi + 1]?.[0]?.at ?? Number.POSITIVE_INFINITY
+      const to = Math.min((tail.endedAt ?? now) + 60_000, next - 1)
       const inWindow = (at: number) => at >= from && at <= to
       let ms = 0
       for (const t of g) ms += t.workMs ?? (t.endedAt ? t.endedAt - t.at : 0)
@@ -697,8 +709,13 @@ export function changeGroups(l: Ledger): Group[] {
           status = repo.hasUpstream ? `${n} commit${n === 1 ? '' : 's'} not pushed` : `${made} commit${made === 1 ? '' : 's'}, no remote`
           tone = 'warn'
         } else {
-          status = list.length ? 'Changes committed' : 'No changes'
-          tone = list.length ? 'done' : 'plain'
+          const loose = list.filter(r => r.state === 'changed').length
+          if (loose === list.length && loose) {
+            status = `${loose} file${loose === 1 ? '' : 's'} changed, not tracked by git`
+          } else {
+            status = list.length ? 'Changes committed' : 'No changes'
+            tone = list.length ? 'done' : 'plain'
+          }
         }
       } else {
         status = `${list.length} file${list.length === 1 ? '' : 's'} changed`
@@ -750,7 +767,7 @@ export function host(url: string): string {
 
 export function clip(s: string, n: number): string {
   const one = s.replace(/\s+/g, ' ').trim()
-  return one.length > n ? `${one.slice(0, n - 1)}…` : one
+  return one.length > n ? `${one.slice(0, n - 1).replace(/[\s.,;:…]+$/, '')}…` : one
 }
 
 export function splitLines(s: string): string[] {
