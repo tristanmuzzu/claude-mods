@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { barHeight, glyph, mark, metaLine, pulse, railNode, rings, track } from './art'
-import { appChats, chatRows, cleanTitle, noteOf } from './chats'
+import { appChats, chatRows, cleanTitle, isUnseen, noteOf, seenOf } from './chats'
 import { cutDiff, parseCounts, parseLog, parseStatus } from './git'
 import { applyPlan, bgAfterPrompt, bgFromStop, bgStarted, changeGroups, clip, diffRows, EMPTY, fileRows, lineOf, newTurn, saidOf, place, prStatusOf, prWords, promptText, settle, stories } from './model'
 
@@ -615,7 +615,7 @@ test('an opened request keeps a long question whole, and finds files its older s
   expect(story?.files).toEqual(['/p/a.ts'])
 })
 
-test('other chats: those that need you first, a silent working chat is quiet, this chat left out', () => {
+test('other chats: those that need you first, a silent chat leaves the board, this chat left out', () => {
   const now = 1_700_000_000_000
   const apps = appChats(
     JSON.stringify([
@@ -638,11 +638,56 @@ test('other chats: those that need you first, a silent working chat is quiet, th
   expect(rows.map(r => [r.title, r.state])).toEqual([
     ['Thesis', 'needs'],
     ['Render reels', 'working'],
-    ['Crashed', 'quiet'],
   ])
   expect(rows[1]?.doing).toBe('Running')
-  expect(rows[2]?.line).toBe('No word from this chat lately')
   expect(cleanTitle('🟢 🟢 Fix it')).toBe('Fix it')
+})
+
+test('other chats: a finished chat shows until you open it, and a running one without a note still shows', () => {
+  const now = 1_700_000_000_000
+  const min = 60_000
+  const apps = appChats(
+    JSON.stringify([
+      { sessionId: 'local_me', title: 'This one', lastActivityAt: new Date(now).toISOString() },
+      { sessionId: 'local_new', title: 'Finished while away', lastActivityAt: new Date(now - 30 * min).toISOString() },
+      { sessionId: 'local_watched', title: 'Finished in view', lastActivityAt: new Date(now - 37 * min).toISOString() },
+      { sessionId: 'local_opened', title: 'Opened since', lastActivityAt: new Date(now - 70 * min).toISOString() },
+      { sessionId: 'local_old', title: 'Older map', isRunning: true, lastActivityAt: new Date(now - min).toISOString() },
+    ]),
+  )
+  const hero = { mood: 'done', eyebrow: 'Done', headline: 'Reels rendered' }
+  const notes = [
+    noteOf('local_new', hero, false, false, false, [], now - 30 * min),
+    noteOf('local_watched', hero, false, false, false, [], now - 37 * min),
+    noteOf('local_opened', hero, false, false, false, [], now - 70 * min),
+  ]
+  // You switched to "watched" 45 minutes ago and stayed there until you came here 4 minutes ago:
+  // it ended in view. "new" ended 30 minutes ago, after you had left it. "opened" ended before
+  // you last switched to it.
+  const seen = {
+    local_me: { focusedAt: now - 4 * min, edgeAt: now },
+    local_new: { focusedAt: now - 50 * min, edgeAt: now - 30 * min },
+    local_watched: { focusedAt: now - 45 * min, edgeAt: now - 37 * min },
+    local_opened: { focusedAt: now - 59 * min, edgeAt: now - 70 * min },
+  }
+  const rows = chatRows(apps, notes, 'local_me', now, seen)
+  expect(rows.map(r => [r.title, r.state])).toEqual([
+    ['Older map', 'working'],
+    ['Finished while away', 'done'],
+  ])
+  expect(isUnseen('local_new', now - 30 * min, seen)).toBe(true)
+  expect(isUnseen('local_watched', now - 37 * min, seen)).toBe(false)
+  // Opening "new" takes it off the board.
+  const after = { ...seen, local_new: { focusedAt: now, edgeAt: now - 30 * min } }
+  expect(chatRows(apps, notes, 'local_me', now + 5000, after).map(r => r.title)).toEqual(['Older map'])
+  // Without the app's records, a finished chat shows only for a few minutes.
+  expect(chatRows(apps, notes, 'local_me', now, {}).map(r => r.title)).toEqual(['Older map'])
+  expect(seenOf('{"x":1,"lastFocusedAt":1794226743336,"lastActivityAt":5,"lastTurnEdgeAt":1794226437067}')).toEqual({
+    focusedAt: 1794226743336,
+    edgeAt: 1794226437067,
+  })
+  expect(seenOf('{}')).toBe(null)
+  expect(seenOf('{"lastFocusedAt":100,"latestUserFrameAt":300,"lastTurnEdgeAt":400}')).toEqual({ focusedAt: 300, edgeAt: 400 })
 })
 
 test('a done request without a recap leads with the opening of its answer', () => {

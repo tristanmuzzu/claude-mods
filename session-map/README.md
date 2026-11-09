@@ -39,14 +39,13 @@ Top to bottom:
   open it in your code editor: the first of VS Code, Cursor, Zed, Codium,
   Sublime Text or GNOME Text Editor that is installed.
 
-- **Other chats**: every other chat from the last day, the ones that need
-  you first: a mark for where each stands (needs you, working, waiting on
-  background work, done), its title, how long ago it moved, a small heartbeat
-  of its current request and one line on what it is doing or asking. Press a
-  title to go to that chat. Each chat's map shares a small note on where it
-  stands in `~/.local/state/claude-session-map/chats/`; a chat whose map is
-  older, or that went silent while working, shows as a quiet row. Desktop
-  app only.
+- **Other chats**: the other chats that are doing something, the ones that
+  need you first (needs you, working, waiting on background work), and the
+  ones that finished since you last looked at them. Once you open a finished
+  chat it leaves the board. Each row has a mark for where the chat stands,
+  its title, how long ago it moved, a small heartbeat of its current request
+  and one line on what it is doing or asking. Four show at once, with Show
+  more for the rest. Press a title to go to that chat. Desktop app only.
 
 ## What it reads, writes and runs
 
@@ -61,6 +60,10 @@ Everything stays on your computer except one GitHub request, listed below.
   - Files Claude edits, to find an edit's line number.
   - The app's list of chats (titles and links, through its `list_sessions`
     tool) and other chats' notes, for the Other chats board.
+  - Two times from the desktop app's own record of each listed chat (when you
+    last opened or wrote in it, and when its last turn ended), to tell which
+    finished chats you have not opened yet. These records live under
+    `~/.config/Claude/claude-code-sessions/`; the map only reads them.
 - **Runs**
   - Read-only git commands (`status`, `diff`, `log`, `rev-parse`,
     `rev-list`) in projects the chat touches.

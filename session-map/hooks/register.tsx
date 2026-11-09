@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { Bg, Kind, Ledger, Others, PlanItem, Probe, Repo, Shared, TurnEnd, View } from '../types'
+import type { Bg, Kind, Ledger, Others, PlanItem, Probe, Repo, Seen, Shared, TurnEnd, View } from '../types'
 import {
   badge,
   BG_INK,
@@ -28,7 +28,7 @@ import {
   WAIT,
 } from './art'
 import type { Mood } from './art'
-import { ago, appChats, chatRows, noteOf, sharedOf } from './chats'
+import { ago, appChats, chatRows, noteOf, seenOf, sharedOf } from './chats'
 import type { ChatRow } from './chats'
 import { diffOf, gitTrouble, knownRoot, prOf, rebase, rootOf, scan } from './git'
 import {
@@ -110,6 +110,8 @@ let shareSoon: { cancel: () => void } | null = null
 let self: { id: string; dir: string } | null = null
 let lastShared = ''
 let appsAt = 0
+/** The app's record of each chat, read again only when its file changes. */
+let records: { dirs: string[] | null; byId: Record<string, { mtimeMs: number; seen: Seen | null }> } = { dirs: null, byId: {} }
 let pending: { cancel: () => void } | null = null
 let lastError = ''
 /** Turn ends heard for a turn other than the main one in progress, for the dev probe. */
@@ -293,7 +295,7 @@ export const register: Register = on => {
     const rowW = WIDE - RAIL_W - 4
     const files = new Map(fileRows(l).map(r => [r.path, r]))
     const o = await read($, others)
-    const chats = self ? chatRows(o.apps, o.notes, self.id, now) : []
+    const chats = self ? chatRows(o.apps, o.notes, self.id, now, o.seen ?? {}) : []
 
     const section = (title: string, note: string) => (
       <Box flexDirection="row" gap={1} alignItems="center">
@@ -441,7 +443,7 @@ export const register: Register = on => {
         ) : null}
 
         {/* ---------------- Other chats */}
-        {chats.length ? otherChats($, chats, v, now, W, { Box, Text, Button, Svg }) : null}
+        {self && o.apps.length ? otherChats($, chats, v, now, W, { Box, Text, Button, Svg }) : null}
       </Box>
     )
   })
@@ -555,7 +557,7 @@ function nodeAlt(s: Story): string {
 
 /** Other chats shown before "Show more". */
 const CHATS_SHOWN = 4
-const CHAT_WORD: Record<ChatRow['state'], string> = { needs: 'Needs you', working: '', waiting: 'Waiting on background work', done: 'Done', quiet: '' }
+const CHAT_WORD: Record<ChatRow['state'], string> = { needs: 'Needs you', working: '', waiting: 'Waiting on background work', done: 'Done, not opened yet', quiet: '' }
 
 /**
  * The other chats, the ones that need you first: a mark for where each stands, its title (press
@@ -573,12 +575,17 @@ function otherChats($: EngineInterface, rows: ChatRow[], v: View, now: number, w
           Other chats
         </Text>
         <Text size="footnote" color={needs ? WAIT : QUIET}>
-          {needs ? `${needs} need${needs === 1 ? 's' : ''} you` : `${rows.length}`}
+          {needs ? `${needs} need${needs === 1 ? 's' : ''} you` : rows.length ? `${rows.length}` : ''}
         </Text>
       </Box>
+      {rows.length ? null : (
+        <Text size="footnote" color={QUIET}>
+          No other chat is working or has news for you
+        </Text>
+      )}
       {shown.map(r => {
         const c = r.state === 'needs' ? WAIT : moodColor(r.mood as Mood) ?? QUIET
-        const word = r.state === 'working' ? r.doing : CHAT_WORD[r.state]
+        const word = r.state === 'working' ? r.doing || 'Working' : CHAT_WORD[r.state]
         const pulseW = Math.min(90, Math.round(width * 0.24))
         return (
           <Box key={`chat:${r.id}`} flexDirection="row" gap={1} alignItems="flex-start">
@@ -1231,12 +1238,50 @@ async function lookAround($: EngineInterface) {
       const n = sharedOf(await $.fs.read(`${self.dir}/${f.name}`).catch(() => ''))
       if (n && n.id !== self.id) notes.push(n)
     }
-    const next = { apps, notes, at: now }
+    const seen = await readSeen($, [...apps.map(a => a.id), self.id])
+    const next = { apps, notes, at: now, seen }
     if (JSON.stringify({ ...next, at: 0 }) !== JSON.stringify({ ...was, at: 0 })) await update($, others, () => next)
   } catch (err) {
     // Try again in a few seconds.
     lastError = `lookAround: ${String(err)}`
   }
+}
+
+/**
+ * When you last switched to each chat and when its last turn ended, from the desktop app's own
+ * record of each chat (one JSON file per chat under its config folder). Read-only, and only the
+ * files that changed since the last look; an app that keeps no such records leaves this empty.
+ */
+async function readSeen($: EngineInterface, ids: string[]): Promise<Record<string, Seen>> {
+  if (!records.dirs) {
+    const home = (await $.env.get('HOME')) ?? ''
+    const config = (await $.env.get('XDG_CONFIG_HOME')) || `${home}/.config`
+    const dirs: string[] = []
+    for (const base of [`${config}/Claude/claude-code-sessions`, `${home}/Library/Application Support/Claude/claude-code-sessions`]) {
+      for (const account of await $.fs.list(base).catch(() => [])) {
+        if (account.kind !== 'dir') continue
+        for (const org of await $.fs.list(`${base}/${account.name}`).catch(() => [])) {
+          if (org.kind === 'dir') dirs.push(`${base}/${account.name}/${org.name}`)
+        }
+      }
+    }
+    records.dirs = dirs
+  }
+  const want = new Set(ids)
+  const seen: Record<string, Seen> = {}
+  for (const dir of records.dirs) {
+    for (const f of await $.fs.list(dir).catch(() => [])) {
+      const id = f.name.replace(/\.json$/, '')
+      if (f.kind !== 'file' || !want.has(id)) continue
+      let r = records.byId[id]
+      if (!r || r.mtimeMs !== f.mtimeMs) {
+        r = { mtimeMs: f.mtimeMs, seen: seenOf(await $.fs.read(`${dir}/${f.name}`).catch(() => '')) }
+        records.byId[id] = r
+      }
+      if (r.seen) seen[id] = r.seen
+    }
+  }
+  return seen
 }
 
 /** Opens a chat in the app by its link, as a click on it outside the app would. */

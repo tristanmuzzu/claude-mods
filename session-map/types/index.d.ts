@@ -170,10 +170,16 @@ export type Shared = {
 }
 
 /** A chat as the app lists it. */
-export type AppChat = { id: string; title: string; link: string | null; lastAt: number }
+export type AppChat = { id: string; title: string; link: string | null; lastAt: number; isRunning?: boolean }
+
+/**
+ * From the app's own record of a chat: when you last switched to it or wrote in it (either says
+ * it was in view then), and when its last turn ended or began.
+ */
+export type Seen = { focusedAt: number; edgeAt: number }
 
 /** The other chats as last read: the app's list and each map's shared note. */
-export type Others = { apps: AppChat[]; notes: Shared[]; at: number }
+export type Others = { apps: AppChat[]; notes: Shared[]; at: number; seen?: Record<string, Seen> }
 
 /** What the last drawing measured, for the dev probe. */
 export type Probe = { surface: string; bodyColumns: number; placement: string; at: number }
