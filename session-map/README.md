@@ -66,9 +66,11 @@ It makes no model calls and sends nothing anywhere else.
   - The chat's own messages and tool calls as they happen, including the
     desktop app's task list and wrap-up. Its hooks only watch them: it does
     not change a prompt, a tool call or a result.
-  - When it loads after a chat has begun, the last 4 MB of that chat's own
-    transcript (one `.jsonl` file under `~/.claude/projects/`), to catch up
-    on the steps it missed.
+  - When it loads after a chat has begun, or the app resumes a chat after a
+    restart, that chat's own transcript (one `.jsonl` file under
+    `~/.claude/projects/`), to catch up on the steps it missed: the requests,
+    tool calls and their outcomes, newest first up to 4 MB, never the
+    images or the app's own records in it.
   - Files Claude edits, to find an edit's line number.
   - The app's list of chats (titles and links) and other chats' notes, for
     the Other chats board.
@@ -80,7 +82,10 @@ It makes no model calls and sends nothing anywhere else.
   - `git` (`status`, `diff`, `log`, `rev-parse`, `rev-list`), read-only, in
     projects the chat touches, to show what changed.
   - `grep -c` to count lines in new files.
-  - `tail -c 4000000` on the chat's own transcript, as above.
+  - `python3 -I -c <script>` on the chat's own transcript, as above: the
+    script (in `hooks/register.tsx`, `EXTRACT`) only reads that file and
+    prints the rows the map uses. Without `python3` it falls back to `sed`
+    (blanking the images) with `wc -l`, then to `tail -c 4000000`.
   - `gh pr view` for pull requests the chat opened, to show their checks.
   - `which` and `setsid` to find and start your code editor when you press
     ✎ (the first of VS Code, Cursor, Zed, Codium, Sublime Text, GNOME Text

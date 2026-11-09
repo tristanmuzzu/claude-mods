@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { barHeight, glyph, mark, metaLine, pulse, railNode, rings, track } from './art'
 import { colorAt, ease, FADE_MS, follow, isFading, mix } from './fade'
+import { appear, dwell, DWELL_MS, layered, LAYER_MS, stack } from './motion'
 import { appChats, chatRows, cleanTitle, isUnseen, noteOf, seenOf } from './chats'
 import { cutDiff, parseCounts, parseLog, parseStatus } from './git'
 import { applyPlan, bgAfterPrompt, heldLive, HOLD_MS, bgFromStop, bgStarted, changeGroups, clip, diffRows, EMPTY, fileRows, lineOf, newTurn, saidOf, place, prStatusOf, prWords, promptText, settle, stories } from './model'
@@ -533,7 +534,7 @@ test('pressing a request opens its story: heartbeat, recap, files and commits', 
   expect(all.some(t => /The login bug is fixed\. Tests pass\./.test(t))).toBe(true)
   expect(all.some(t => /1 edit/.test(t))).toBe(true)
   expect(await button(ui, 'open:req1:/tmp/x/login.ts')).toBeTruthy()
-  expect(((await ui.findAll({ type: 'Svg' })) as any[]).filter(x => /height="30"/.test(String(x.props?.source))).length).toBe(2)
+  expect(((await ui.findAll({ type: 'Svg' })) as any[]).filter(x => /height="30"/.test(String(x.props?.source)) && /viewBox/.test(String(x.props?.source))).length).toBe(2)
   await press(ui, 'req:1')
   expect((await texts(ui)).some(t => /Tests pass/.test(t))).toBe(false)
   await ui.unmount()
@@ -782,12 +783,7 @@ test('a mood colour fades through OKLab, and a change mid-fade starts from what 
 })
 
 test('the Now card eases into the next mood colour instead of switching', async ($, on) => {
-  engine(on, ['clock.every'])
-  const timers: number[] = []
-  on('clock.every', (_: unknown, e: any) => {
-    timers.push(Number(e.ms ?? e.every ?? e.period ?? 0))
-    return { value: {} }
-  })
+  engine(on)
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await $.prompt.submit({ text: 'Fade it' } as any)
   await ($ as any).turn.start({ text: 'Fade it', turnId: 't1' })
@@ -795,31 +791,66 @@ test('the Now card eases into the next mood colour instead of switching', async 
     const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
     const box = await ui.find({ type: 'Box', key: 'now' })
     const eyebrow = (await ui.findAll({ type: 'Text' })).find((t: any) => /^(Thinking|Done)/.test(t.text))
-    const svg = (await ui.findAll({ type: 'Svg' }))[0]
+    // The glyph's frames, bottom to top: the one on top is what shows once painted.
+    const glyphs = (await ui.findAll({ type: 'Svg' })).map((s: any) => String(s.props.source)).filter(s => s.includes('viewBox="0 0 64 64"'))
     await ui.unmount()
-    return { border: box?.props.borderColor, ink: eyebrow?.props.color, svg: String(svg?.props.source ?? '') }
+    return { border: box?.props.borderColor, ink: eyebrow?.props.color, glyphs }
   }
+  const settle = () => new Promise(r => setTimeout(r, LAYER_MS + 50))
+  // The first drawing brings its words up from dim: look once it has.
+  await now()
+  await settle()
   const thinking = await now()
   expect(thinking.border).toBe('#e07a52')
   expect(thinking.ink).toBe('#e07a52')
+  expect(thinking.glyphs.length).toBe(1)
 
   await ($ as any).turn.complete({ answer: 'ok', durationMs: 5, isAborted: false, turnId: 't1', reason: 'answer' })
   const t0 = Date.now()
   const during = await now()
   expect(Date.now() - t0).toBeLessThan(FADE_MS)
-  {
-    // Still on the way: neither the old colour nor the new one yet, and the glyph carries the fade.
-    expect(during.ink).not.toBe('#5fd27e')
-    expect(during.border).not.toBe('#34363a')
-    // The glyph is on its way too, drawn in an in-between colour rather than the new one.
-    expect(during.svg).not.toContain('color="#5fd27e"')
-    expect(timers).toContain(40)
-  }
-  await new Promise(r => setTimeout(r, FADE_MS + 50))
+  // On the way: neither colour yet, and the new glyph is stacked over the old to cross-fade.
+  expect(during.ink).not.toBe('#5fd27e')
+  expect(during.border).not.toBe('#34363a')
+  expect(during.glyphs.length).toBe(2)
+  expect(during.glyphs[0]).toContain('color="#e07a52"')
+  expect(during.glyphs[1]).toContain('color="#5fd27e"')
+  expect(during.glyphs[1]).toContain('@keyframes in')
+  await settle()
   const after = await now()
   expect(after.ink).toBe('#5fd27e')
   expect(after.border).toBe('#34363a')
-  expect(after.svg).toContain('color="#5fd27e"')
+  expect(after.glyphs.length).toBe(1)
+  expect(after.glyphs[0]).toContain('color="#5fd27e"')
+})
+
+test('the Now card frames keep every prop while its timer ticks, so none reloads', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'Tick' } as any)
+  await ($ as any).turn.start({ text: 'Tick', turnId: 't1' })
+  const look = async () => {
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    const eyebrow = (await ui.findAll({ type: 'Text' })).find((t: any) => /^Thinking/.test(t.text))
+    const frames = (await ui.findAll({ type: 'Svg' })).filter((s: any) => s.props.isInteractive && String(s.props.source).includes('viewBox="0 0 64 64"'))
+    const slot = await ui.find({ type: 'Box', key: 'slot:glyph' })
+    const plan = await ui.find({ type: 'Box', key: 'plan-row' })
+    await ui.unmount()
+    return { eyebrow: eyebrow?.text, frames: frames.map((s: any) => JSON.stringify(s.props)), shrink: slot?.props.flexShrink, plan: plan?.props.display }
+  }
+  await look()
+  await new Promise(r => setTimeout(r, LAYER_MS + 50))
+  const a = await look()
+  await new Promise(r => setTimeout(r, 1100))
+  const b = await look()
+  expect(a.eyebrow).not.toBe(b.eyebrow)
+  expect(b.frames).toEqual(a.frames)
+  expect(a.frames.length).toBe(1)
+  expect(a.frames[0]).toContain('"alt":"Activity icon"')
+  // A long headline beside it must not squeeze the glyph.
+  expect(a.shrink).toBe(0)
+  // With no plan, its part stays in the tree, hidden, so its coming later rebuilds nothing.
+  expect(a.plan).toBe('none')
 })
 
 test('a chat resumed after a restart is told again once its new transcript appears', async ($, on) => {
@@ -872,6 +903,38 @@ test('a step shorter than the hold never takes over the Now card', () => {
   expect(heldLive([read], 1000 + HOLD_MS)).toBe(read)
   expect(heldLive([read, helper], 1000 + HOLD_MS)).toBe(read)
   // A newer quick step does not hide an older one that has been running.
-  const quick = { ...read, id: 'q', at: 1500 }
-  expect(heldLive([read, quick], 1550)).toBe(read)
+  const quick = { ...read, id: 'q', at: 1000 + HOLD_MS }
+  expect(heldLive([read, quick], 1000 + HOLD_MS + 50)).toBe(read)
+})
+
+test('a stacked drawing keeps its frame while unchanged and cross-fades a change', () => {
+  let n = 0
+  const key = () => `k${++n}`
+  let s = stack([], 'A', 0, key)
+  expect(s.map(x => x.key)).toEqual(['k1'])
+  // Unchanged: the same frame, so its animation runs on.
+  expect(stack(s, 'A', 500, key)).toBe(s)
+  s = stack(s, 'B', 1000, key)
+  expect(s.map(x => x.src)).toEqual(['A', 'B'])
+  // The old frame stays under the new one until it has had time to paint.
+  expect(stack(s, 'B', 1000 + LAYER_MS - 1, key).map(x => x.src)).toEqual(['A', 'B'])
+  expect(stack(s, 'B', 1000 + LAYER_MS, key).map(x => x.src)).toEqual(['B'])
+  const l = layered('<svg width="4" height="4"><circle/></svg>', '#232427', 200)
+  expect(l).toBe('<svg width="4" height="4"><style>svg{animation:in 200ms ease-out both}@keyframes in{from{opacity:0}}</style><rect width="100%" height="100%" fill="#232427"/><circle/></svg>')
+})
+
+test('the card holds what it shows for a moment, unless what comes next needs you', () => {
+  const a = dwell(null, 'thinking', 'thinking', false, 0)
+  expect(a.shown.hero).toBe('thinking')
+  // A change too soon waits, and says how long.
+  const b = dwell(a.shown, 'running', 'running', false, 300)
+  expect(b.shown.hero).toBe('thinking')
+  expect(b.wait).toBe(DWELL_MS - 300)
+  expect(dwell(a.shown, 'running', 'running', false, DWELL_MS).shown.hero).toBe('running')
+  // A question for you never waits.
+  expect(dwell(a.shown, 'asking', 'asking', true, 300).shown.hero).toBe('asking')
+  // The same state with a newer timer is no change: it keeps its start.
+  expect(dwell(a.shown, 'thinking 2s', 'thinking', false, 300).shown).toEqual({ hero: 'thinking 2s', id: 'thinking', at: 0 })
+  expect(appear(0)).toBe(0)
+  expect(appear(10_000)).toBe(1)
 })

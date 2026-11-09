@@ -1027,7 +1027,7 @@ export function diffRows(diff: string): DiffRow[] {
  * tenth of a second) would otherwise swing the card's words, glyph and colour away and straight
  * back, and reload each drawing twice. The step still lands on the heartbeat when it ends.
  */
-export const HOLD_MS = 400
+export const HOLD_MS = 700
 
 /** The main loop's step the Now card shows: the newest one that has run for HOLD_MS. */
 export function heldLive(live: Live[], now: number): Live | null {

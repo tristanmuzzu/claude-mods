@@ -28,7 +28,9 @@ import {
   WAIT,
 } from './art'
 import type { Mood } from './art'
-import { colorAt, FADE_FRAME_MS, follow, isFading } from './fade'
+import { colorAt, FADE_FRAME_MS, follow, isFading, mix } from './fade'
+import { appear, dwell, isSettling, layered, stack } from './motion'
+import type { Layer, Shown } from './motion'
 import type { Fade } from './fade'
 import { ago, appChats, chatRows, noteOf, seenOf, sharedOf } from './chats'
 import type { ChatRow } from './chats'
@@ -127,6 +129,18 @@ let lastError = ''
  */
 const fades: Record<'tint' | 'border', Fade | null> = { tint: null, border: null }
 let fadeTimer: { cancel: () => void } | null = null
+/** The card's ground, under every drawing on it. */
+const CARD = '#232427'
+/** Each stacked drawing's frames (motion.ts), and the counter that keys new ones. */
+const layers: Record<'glyph' | 'pulse' | 'track', Layer[]> = { glyph: [], pulse: [], track: [] }
+/** Each stacked drawing's fixed `alt`: never empty, never changing, so its frames draw and stay. */
+const SLOT_NAME: Record<keyof typeof layers, string> = { glyph: 'Activity icon', pulse: 'Steps so far', track: 'Plan progress' }
+let layerSeq = 0
+/** What the Now card shows (it may lag the truth by up to DWELL_MS), and when its words changed. */
+let shownHero: Shown<Hero> | null = null
+let words: { id: string; at: number } | null = null
+/** When a redraw is already due, so a wait asked for twice sets one timer. */
+let wakeAt = 0
 /**
  * Whether this process has read the chat's transcript once. A chat the app resumes after a
  * restart gets a new session id, and its transcript file is only written with the first prompt,
@@ -305,15 +319,21 @@ export const register: Register = on => {
 
     const all = stories(l, now)
     const groups = changeGroups(l)
-    const hero = heroOf(l, all[0] ?? null, now)
-    // `tint` is the mood's colour, for drawings that never fade; `tintNow` is where the fade to it
-    // stands, for the card's glyph, texts and border. The glyph is drawn as an image, which starts
-    // its own animations over on every redraw, so its colour is set here frame by frame too.
+    // What is true now, and what the card shows: the same, or the last state for up to DWELL_MS.
+    const truth = heroOf(l, all[0] ?? null, now)
+    const held = dwell(shownHero, truth, heroId(truth), isUrgent(truth) || !l.isWorking, now)
+    shownHero = held.shown
+    if (held.wait > 0) wake($, held.wait)
+    const hero = held.shown.hero
+    if (!words || words.id !== held.shown.id) words = { id: held.shown.id, at: now }
+    // New words come up from dim rather than cutting in.
+    const up = 0.35 + 0.65 * appear(now - words.at)
+    // `tint` is the mood's colour, for the drawings (each change cross-fades as a new layer);
+    // `tintNow` is where the fade to it stands, for the card's texts and border.
     const tint = moodColor(hero.mood)
     fades.tint = follow(fades.tint, tint, now)
     fades.border = follow(fades.border, hero.isLive ? tint : '#34363a', now)
     const tintNow = colorAt(fades.tint, now)
-    if (isFading(fades.tint, now) || isFading(fades.border, now)) startFade($)
     const plan = l.plan ?? []
     const showPlan = plan.length > 0 && l.planTurn === headTurn(l)
     const place = planPlace(plan)
@@ -327,8 +347,30 @@ export const register: Register = on => {
     const also = alongside(l, now)
     const rowW = WIDE - RAIL_W - 4
     const files = new Map(fileRows(l).map(r => [r.path, r]))
+    // A drawing as a stack of frames: a change loads on top and fades in, so nothing blanks and
+    // an unchanged frame keeps its animation running across redraws.
+    // A frame reloads, blank, when any of its props changes, its `alt` too, and one with an empty
+    // `alt` is not drawn at all: each frame carries its slot's fixed name, and the still image
+    // under them says what the drawing shows now.
+    const stacked = (slot: keyof typeof layers, src: string, pw: number, ph: number, alt: string, fadeMs: number) => {
+      if (!Svg) return null
+      layers[slot] = stack(layers[slot], layered(src, CARD, fadeMs), now, () => `${slot}:${++layerSeq}`)
+      return (
+        // Never squeezed: a long headline beside the glyph would shrink this box, frames and all.
+        <Box key={`slot:${slot}`} position="relative" flexShrink={0}>
+          <Svg source={`<svg xmlns="http://www.w3.org/2000/svg" width="${pw}" height="${ph}"/>`} width={pw} height={ph} alt={alt} />
+          {layers[slot].map(x => (
+            <Box key={x.key} position="absolute" top={0} left={0}>
+              <Svg source={x.src} width={pw} height={ph} alt={SLOT_NAME[slot]} isInteractive />
+            </Box>
+          ))}
+        </Box>
+      )
+    }
     const o = await read($, others)
     const chats = self ? chatRows(o.apps, o.notes, self.id, now, o.seen ?? {}) : []
+
+    if (inMotion(now)) startFade($)
 
     const section = (title: string, note: string) => (
       <Box flexDirection="row" gap={1} alignItems="center">
@@ -348,66 +390,65 @@ export const register: Register = on => {
         {/* ---------------- Now */}
         <Box key="now" flexDirection="column" gap={1} padding={1} backgroundColor="#232427" borderStyle="round" borderColor={colorAt(fades.border as Fade, now)}>
           <Box flexDirection="row" gap={1} alignItems="center">
-            {Svg ? <Svg source={glyph(hero.mood, hero.isLive, tintNow)} width={56} height={56} alt={`${hero.eyebrow}: ${hero.headline}`} /> : null}
+            {stacked('glyph', glyph(hero.mood, hero.isLive), 56, 56, `${hero.eyebrow}: ${hero.headline}`, 220)}
             <Box flexDirection="column" flexShrink={1} minWidth={0} gap={0}>
-              <Text size="caption" weight="bold" color={tintNow}>
+              <Text size="caption" weight="bold" color={mix(CARD, tintNow, up)}>
                 {hero.eyebrow}
               </Text>
-              <Text size="heading" weight="semibold" wrap="wrap">
+              <Text size="heading" weight="semibold" wrap="wrap" color={mix(CARD, '#ececec', up)}>
                 {hero.headline}
               </Text>
             </Box>
           </Box>
-          {showPulse && Svg ? (
-            <Svg
-              key="pulse"
-              source={pulse(
+          {/* Each part below is always in the tree, hidden while it has nothing to show: a part
+              coming or going makes the app rebuild the frames beside it, blank for a moment. */}
+          <Box key="pulse-row" display={showPulse ? 'flex' : 'none'}>
+            {stacked(
+              'pulse',
+              pulse(
                 beats,
-                // Whole seconds, so the redraws of a fade leave the drawing as it was.
+                // Whole seconds, so redraws in between leave the drawing (and its frame) as it was.
                 mainLive ? { kind: mainLive.kind, ms: Math.floor((now - mainLive.at) / 1000) * 1000 } : null,
                 isThinking,
                 W,
                 tint,
-              )}
-              width={W}
-              height={PULSE_H}
-              alt={pulseAlt(latest)}
-            />
-          ) : null}
-          {showPlan ? (
-            <Box flexDirection="column" gap={0}>
-              {Svg ? <Svg source={track(plan, W, hero.isLive ? tint : DONE)} width={W} height={8} alt={planAlt(plan)} /> : null}
-              <Text size="caption" dimColor wrap="truncate-end">
-                {place.current ? `${place.index + 1} of ${place.total} · ` : `${place.done} of ${place.total} done`}
-                {place.current ? <Text color="#e6e6e6">{place.current.text}</Text> : null}
-              </Text>
-            </Box>
-          ) : null}
-          {also.length ? (
-            <Box key="also" flexDirection="column" gap={0}>
-              <Text size="caption" dimColor>
-                {`Also running · ${also.length}`}
-              </Text>
-              {also.slice(0, 5).map(b => (
-                <Box key={`bg:${b.id}`} flexDirection="row" gap={1} alignItems="center">
-                  {Svg ? <Svg source={bgIcon(b.kind)} width={16} height={16} alt={b.kind} isInteractive /> : null}
-                  <Box flexGrow={1} flexShrink={1} minWidth={0}>
-                    <Text size="footnote" color="#d6d6d6" wrap="truncate-end">
-                      {b.label}
-                    </Text>
-                  </Box>
-                  <Text size="footnote" color={BG_INK[b.kind] ?? QUIET} tabular>
-                    {b.until != null ? `in ${span(b.until - now)}` : span(now - b.at)}
+              ),
+              W,
+              PULSE_H,
+              pulseAlt(latest) || 'No steps yet',
+              140,
+            )}
+          </Box>
+          <Box key="plan-row" flexDirection="column" gap={0} display={showPlan ? 'flex' : 'none'}>
+            {stacked('track', track(plan, W, hero.isLive ? tint : DONE), W, 8, planAlt(plan) || 'No plan', 140)}
+            <Text size="caption" dimColor wrap="truncate-end">
+              {place.current ? `${place.index + 1} of ${place.total} · ` : `${place.done} of ${place.total} done`}
+              {place.current ? <Text color="#e6e6e6">{place.current.text}</Text> : null}
+            </Text>
+          </Box>
+          <Box key="also" flexDirection="column" gap={0} display={also.length ? 'flex' : 'none'}>
+            <Text size="caption" dimColor>
+              {`Also running · ${also.length}`}
+            </Text>
+            {also.slice(0, 5).map(b => (
+              <Box key={`bg:${b.id}`} flexDirection="row" gap={1} alignItems="center">
+                {Svg ? <Svg source={bgIcon(b.kind)} width={16} height={16} alt={b.kind} isInteractive /> : null}
+                <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                  <Text size="footnote" color="#d6d6d6" wrap="truncate-end">
+                    {b.label}
                   </Text>
                 </Box>
-              ))}
-              {also.length > 5 ? (
-                <Text size="caption" dimColor>
-                  {`and ${also.length - 5} more`}
+                <Text size="footnote" color={BG_INK[b.kind] ?? QUIET} tabular>
+                  {b.until != null ? `in ${span(b.until - now)}` : span(now - b.at)}
                 </Text>
-              ) : null}
-            </Box>
-          ) : null}
+              </Box>
+            ))}
+            {also.length > 5 ? (
+              <Text size="caption" dimColor>
+                {`and ${also.length - 5} more`}
+              </Text>
+            ) : null}
+          </Box>
         </Box>
 
         {/* ---------------- Vitals */}
@@ -504,6 +545,16 @@ async function openPane($: EngineInterface, focus: boolean) {
 // ---------------------------------------------------------------- the Now card
 
 type Hero = { mood: Mood; eyebrow: string; headline: string; isLive: boolean }
+
+/** A state of the card as a change goes: its kind of work and its line, not its timer. */
+function heroId(h: Hero): string {
+  return `${h.mood}|${h.headline}`
+}
+
+/** A state shown at once, not after the last one's dwell: one that needs you, or the end of the work (as is any once the turn is over). */
+function isUrgent(h: Hero): boolean {
+  return h.mood === 'waiting' || h.mood === 'stopped' || !h.isLive
+}
 
 function heroOf(l: Ledger, last: Story | null, now: number): Hero {
   const live = [...l.live].reverse()
@@ -1053,6 +1104,71 @@ async function transcriptOf($: EngineInterface, id: string): Promise<string | nu
 }
 
 /**
+ * Reads a transcript down to what the replay uses: the main conversation's user and assistant rows
+ * with their content cut as historyOf cuts it, newest rows first until 3.9 MB. A long chat's file
+ * is mostly what the replay never reads (screenshots as base64, the app's own copy of each tool
+ * result, request records): 10.5 MB of one measured chat held 0.6 MB of this.
+ */
+const EXTRACT = String.raw`import json,sys
+def cut(v,n): return v[:n] if isinstance(v,str) else v
+out=[]
+for line in open(sys.argv[1],encoding='utf-8',errors='replace'):
+    try: r=json.loads(line)
+    except Exception: continue
+    if not isinstance(r,dict) or r.get('type') not in ('user','assistant') or r.get('isSidechain'): continue
+    c=(r.get('message') or {}).get('content')
+    if isinstance(c,list):
+        b2=[]
+        for b in c:
+            if not isinstance(b,dict): continue
+            t=b.get('type')
+            if t=='text': b2.append({'type':'text','text':cut(b.get('text'),4000)})
+            elif t=='tool_use':
+                i=b.get('input')
+                b2.append({'type':'tool_use','id':b.get('id'),'name':b.get('name'),'input':{k:cut(v,20000) for k,v in i.items()} if isinstance(i,dict) else {}})
+            elif t=='tool_result':
+                x=b.get('content')
+                if isinstance(x,list): x='\n'.join(y.get('text','') for y in x if isinstance(y,dict) and y.get('type')=='text')
+                b2.append({'type':'tool_result','tool_use_id':b.get('tool_use_id'),'is_error':b.get('is_error'),'content':cut(x,4000)})
+        c=b2
+    else: c=cut(c,8000)
+    o={'type':r['type'],'timestamp':r.get('timestamp'),'message':{'content':c}}
+    if r.get('isMeta'): o['isMeta']=True
+    out.append(json.dumps(o,separators=(',',':')))
+keep=[];size=0
+for s in reversed(out):
+    size+=len(s.encode())+1
+    if size>3900000: break
+    keep.append(s)
+sys.stdout.write('\n'.join(reversed(keep))+'\n')
+`
+
+/**
+ * The transcript as one string of at most 4 MiB, what one process output holds, keeping the
+ * newest requests when it cannot all fit. python3 reads it down to what the replay uses; without
+ * python3, sed blanks the base64 images, reading from later lines until the rest fits; failing
+ * that, the file's last 4 MB as they are.
+ */
+async function transcriptText($: EngineInterface, path: string): Promise<string> {
+  const py = await $.process.run(['python3', '-I', '-c', EXTRACT, path], { timeoutMs: 60000 }).catch(() => null)
+  if (py && py.exitCode === 0 && py.stdout && !py.isStdoutTruncated) return py.stdout
+  const strip = 's/"data":"[A-Za-z0-9+/=]{64,}"/"data":""/g'
+  for (const part of [0, 0.5, 0.75, 0.875, 0.94]) {
+    let from = 1
+    if (part > 0) {
+      const counted = await $.process.run(['wc', '-l', path], { timeoutMs: 30000 })
+      from = Math.max(1, Math.floor(parseInt(counted.stdout.trim(), 10) * part) || 1)
+    }
+    const r = await $.process.run(['sed', '-E', '-e', `${from},$!d`, '-e', strip, path], { timeoutMs: 30000 }).catch(() => null)
+    if (!r || r.exitCode !== 0) break
+    if (!r.isStdoutTruncated) return r.stdout
+  }
+  const r = await $.process.run(['tail', '-c', '4000000', path], { timeoutMs: 30000 })
+  if (!r.stdout) lastError = `restore: exit ${r.exitCode} ${String(r.stderr).slice(0, 200)}`
+  return r.stdout
+}
+
+/**
  * Tells the chat again from its transcript when the ledger missed some of it: the map loaded
  * after the chat began, or a restart took the session's state. Live tracking stays the source
  * while it runs; this only fills a ledger that holds fewer requests than the transcript.
@@ -1066,14 +1182,10 @@ async function restore($: EngineInterface) {
       lastError = 'restore: no transcript yet'
       return
     }
-    // Only the last 4 MB: a long chat's transcript runs to tens of megabytes.
-    const r = await $.process.run(['tail', '-c', '4000000', path], { timeoutMs: 30000 })
-    if (!r.stdout) {
-      lastError = `restore: exit ${r.exitCode} ${String(r.stderr).slice(0, 200)}`
-      return
-    }
+    const text = await transcriptText($, path)
+    if (!text) return
     restoreDone = true
-    const rows = historyOf(r.stdout)
+    const rows = historyOf(text)
     let since = 0
     let isRestored = false
     await safely($, l => {
@@ -1110,6 +1222,30 @@ async function startTurn($: EngineInterface, turnId: string) {
   keepTicking($)
 }
 
+/** True while anything on the Now card is between two states and needs frames drawn. */
+function inMotion(now: number): boolean {
+  return (
+    Object.values(fades).some(f => isFading(f, now)) ||
+    Object.values(layers).some(x => isSettling(x, now)) ||
+    (words !== null && appear(now - words.at) < 1)
+  )
+}
+
+/** Draws the pane again in `ms`, unless a redraw is already due by then. */
+function wake($: EngineInterface, ms: number) {
+  const at = Date.now() + ms
+  if (wakeAt > Date.now() && wakeAt <= at) return
+  wakeAt = at
+  try {
+    $.clock.after(ms + 15, () => {
+      wakeAt = 0
+      void redraw($)
+    })
+  } catch {
+    wakeAt = 0
+  }
+}
+
 /** Draws the pane again. */
 async function redraw($: EngineInterface) {
   await update($, view, x => ({ ...x, tick: x.tick + 1 })).catch(() => undefined)
@@ -1124,7 +1260,7 @@ function startFade($: EngineInterface) {
   try {
     fadeTimer = $.clock.every(FADE_FRAME_MS, () => {
       const now = Date.now()
-      if (Object.values(fades).some(f => isFading(f, now))) idle = 0
+      if (inMotion(now)) idle = 0
       else if (++idle > 3) {
         fadeTimer?.cancel()
         fadeTimer = null
