@@ -1,6 +1,6 @@
 {
   "name": "working-dot",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Puts a green dot in front of a chat's sidebar title while Claude is working in it, and removes it when the turn ends.",
   "license": "MIT",
   "author": {

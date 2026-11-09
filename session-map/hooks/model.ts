@@ -815,6 +815,15 @@ type StopTask = { id?: string; type?: string; description?: string; command?: st
 type StopCron = { id?: string; recurring?: boolean; prompt?: string; schedule?: string }
 
 /**
+ * A published artifact's live-updates watch. The engine keeps it open for the life of the chat
+ * and does not count it as work in flight ("ambient"), but Stop lists it as a plain monitor
+ * without that flag; its description is the one mark it carries.
+ */
+export function isArtifactWatch(t: StopTask): boolean {
+  return str(t.description).startsWith('live updates for artifact ')
+}
+
+/**
  * The engine's own word at the end of a turn on what is still in flight, which replaces what the
  * map pieced together. Entries it already had keep their start time and wake time.
  */
@@ -823,6 +832,7 @@ export function bgFromStop(tasks: StopTask[], crons: StopCron[], was: Bg[], now:
   const same = (b: Bg) => was.find(x => x.id === b.id || (x.kind === b.kind && x.label === b.label))
   const out: Bg[] = []
   for (const t of tasks) {
+    if (isArtifactWatch(t)) continue
     const b: Bg = { id: str(t.id), kind: kindOf(str(t.type)), label: clip(str(t.description) || str(t.command) || str(t.name) || 'Background work', 80), at: now }
     const old = same(b)
     out.push(old ? { ...b, at: old.at, label: old.label || b.label } : b)

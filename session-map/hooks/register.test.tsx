@@ -561,6 +561,13 @@ test('background work is listed from the calls that start it and the engine word
   expect(bgAfterPrompt(after, '<task-notification>', 601_000)).toEqual([after[0]!])
 })
 
+test('an artifact\'s live-updates watch is not background work', () => {
+  const watch = { id: 's1', type: 'monitor', description: 'live updates for artifact https://claude.ai/artifact/abc (watch)' }
+  expect(bgFromStop([watch], [], [], 5000)).toEqual([])
+  const real = { id: 'm1', type: 'monitor', description: 'Watch the deploy' }
+  expect(bgFromStop([watch, real], [], [], 5000).map(b => b.id)).toEqual(['m1'])
+})
+
 test('background work shows in the Now card while it runs', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })

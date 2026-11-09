@@ -9,7 +9,8 @@ const RECHECK_MS = 15_000
 
 let working = false
 // True while the chat's last turn ended with background work still in flight
-// (a background shell, subagent, monitor or workflow, or a scheduled wakeup):
+// (a background shell, subagent, monitor or workflow, or a scheduled wakeup;
+// not an artifact's live-updates watch, which never ends):
 // paused, not done, so the dot stays until the turn that work wakes ends.
 let pendingWork = false
 let disabled = false // set when the app refuses a rename (no desktop host, or a declined rename)
@@ -66,12 +67,21 @@ function clearMark($: EngineInterface): Promise<unknown> {
   return chain
 }
 
+// A published artifact's live-updates watch: the engine keeps it open for
+// the life of the chat and does not count it as work in flight (it is
+// "ambient"), but Stop lists it without that flag, as a plain monitor.
+// Its description is the one mark it carries.
+function isArtifactWatch(t: unknown): boolean {
+  const d = (t as { description?: unknown } | null)?.description
+  return typeof d === 'string' && d.startsWith('live updates for artifact ')
+}
+
 // Whether a Stop event says the chat will be woken again by work of its own.
 function hasPendingWork(e: {
   background_tasks?: readonly unknown[]
   session_crons?: readonly { recurring: boolean }[]
 }): boolean {
-  if ((e.background_tasks ?? []).length > 0) return true
+  if ((e.background_tasks ?? []).some((t) => !isArtifactWatch(t))) return true
   // A one-shot wakeup means "come back to this task"; a recurring schedule is
   // a standing job, not unfinished work.
   return (e.session_crons ?? []).some((c) => !c.recurring)

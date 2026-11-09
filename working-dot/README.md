@@ -17,7 +17,8 @@ Fix login bug         <- idle
 - The dot stays while a chat is paused on its own background work (a background
   command, subagent, monitor or workflow, or a scheduled wakeup) and comes off
   only when the turn that work wakes ends with nothing left in flight. Stopping
-  a chat yourself clears it.
+  a chat yourself clears it. A published artifact's live-updates watch does
+  not count: it stays open for the life of the chat but is not unfinished work.
 - If the app refuses a rename (for example you decline one on a chat you
   titled yourself), the mod stops renaming that chat until it restarts.
 

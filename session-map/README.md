@@ -15,7 +15,8 @@ Top to bottom:
   work and as tall as it took (red when it failed), the step running now
   breathing at the right end. Then the chat's task list as a track with the
   step in progress, and what else is running: background commands, helpers,
-  monitors, workflows and wake-ups, each with its time. When Claude waits on
+  monitors, workflows and wake-ups, each with its time (not a published
+  artifact's live-updates watch, which stays open but is not work). When Claude waits on
   you it says so ("Needs your answer", "Your call"); when a turn ends with work
   still running in the background it says what it waits on; when a request
   finishes, the first line of its own recap is the headline.
