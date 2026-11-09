@@ -596,3 +596,20 @@ test('a pull request reads as merged, failing, running or passing', () => {
 test('new files commands made are counted line by line', () => {
   expect(parseCounts('/r/out/a.txt:12\n/r/b.bin:0\n/r/c:d.txt:3\n', '/r')).toEqual({ 'out/a.txt': 12, 'b.bin': 0, 'c:d.txt': 3 })
 })
+
+test('an opened request keeps a long question whole, and finds files its older steps did not name', () => {
+  const long = 'word '.repeat(300).trim()
+  const l = newTurn({ ...EMPTY }, long, 1000)!
+  expect(l.turns[0]!.text.length).toBe(long.length)
+  const at = 1_700_000_000_000
+  const [story] = stories(
+    {
+      ...EMPTY,
+      turns: [{ n: 1, text: 'Old request', at, endedAt: at + 60_000 }],
+      steps: [{ kind: 'edit', at: at + 5000, ms: 10, turn: 1, label: 'Editing a.ts', agent: null }],
+      touches: [{ path: '/p/a.ts', reads: 0, edits: 1, added: 1, removed: 0, isNew: false, at: at + 5000, diff: '' }],
+    },
+    at + 100_000,
+  )
+  expect(story?.files).toEqual(['/p/a.ts'])
+})

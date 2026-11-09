@@ -425,7 +425,8 @@ export function withWrap(l: Ledger, args: Record<string, unknown>): Ledger {
 
 /** One request as the ledger keeps it, or null for a prompt with nothing typed in it. */
 export function newTurn(l: Ledger, text: string, at: number): Ledger | null {
-  const clean = promptText(text).slice(0, 240)
+  // Kept whole up to a long paragraph: an opened request shows what was asked in full.
+  const clean = promptText(text).slice(0, 2000)
   if (!clean) return null
   return { ...l, turns: [...l.turns, { n: lastN(l) + 1, text: clean, at, endedAt: null, auto: isAutomated(text) }].slice(-120) }
 }
@@ -688,7 +689,13 @@ export function stories(l: Ledger, now: number): Story[] {
         unpushed,
         chips,
         steps,
-        files: [...new Set(steps.filter(x => x.kind === 'edit' && x.path && x.ok !== false).map(x => x.path as string).reverse())],
+        files: [
+          ...new Set([
+            ...steps.filter(x => x.kind === 'edit' && x.path && x.ok !== false).map(x => x.path as string).reverse(),
+            // Steps from before they named their file: the files last edited while this request ran.
+            ...l.touches.filter(t => t.edits > 0 && inWindow(t.at)).sort((a, b) => b.at - a.at).map(t => t.path),
+          ]),
+        ],
         commitList,
       }
     })
