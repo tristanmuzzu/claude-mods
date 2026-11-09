@@ -63,6 +63,21 @@ export async function scan($: EngineInterface, root: string, was: Repo | null, n
   }
 }
 
+/**
+ * A repository as it stood when the chat began, for a map that starts late: the commit HEAD was
+ * on then, and the changed files nobody has touched since (older than the chat, so not its work).
+ */
+export async function rebase($: EngineInterface, repo: Repo, since: number): Promise<Repo> {
+  const before = await git($, repo.root, ['rev-list', '-1', `--before=${Math.floor(since / 1000)}`, 'HEAD'])
+  const baseline: string[] = []
+  for (const f of repo.files) {
+    const stat = await $.fs.stat(`${repo.root}/${f.rel}`).catch(() => null)
+    // A file gone since cannot say when; deleting it is more likely the chat's work.
+    if (stat && stat.mtimeMs < since) baseline.push(f.rel)
+  }
+  return { ...repo, headAtStart: before?.trim() || repo.headAtStart, baseline }
+}
+
 /** The file's change against HEAD as a unified diff, cut to a readable length. */
 export async function diffOf($: EngineInterface, root: string, rel: string, isNew: boolean, base = 'HEAD'): Promise<string> {
   const out = isNew

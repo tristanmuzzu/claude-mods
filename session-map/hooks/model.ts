@@ -376,6 +376,148 @@ function status(v: unknown): PlanItem['status'] {
   return v === 'completed' || v === 'in_progress' ? v : 'pending'
 }
 
+/** The number of the request a turn's work belongs to: the last one Tristan typed. */
+export function headTurn(l: Ledger): number {
+  for (let i = l.turns.length - 1; i >= 0; i--) {
+    const t = l.turns[i]
+    if (t && !(t.auto ?? isAutomated(t.text))) return t.n
+  }
+  return l.turns[l.turns.length - 1]?.n ?? 0
+}
+
+/** One task-list call on the ledger: a fresh list starts this request's plan; steps alone move the one it has. */
+export function withPlan(l: Ledger, args: Record<string, unknown>): Ledger {
+  const n = headTurn(l)
+  const base = Array.isArray(args.items) || l.planTurn === n ? (l.plan ?? []) : []
+  return { ...l, plan: applyPlan(base, args), planTurn: n }
+}
+
+/** The wrap-up on the ledger: it checks off the task list and gives the request its recap and question. */
+export function withWrap(l: Ledger, args: Record<string, unknown>): Ledger {
+  const recap = clip(str(args.recap), 400)
+  const ask = clip(str(args.ask), 160)
+  return {
+    ...l,
+    plan: (l.plan ?? []).map(p => ({ ...p, status: 'completed' as const })),
+    turns: l.turns.map((t, i) => (i === l.turns.length - 1 ? { ...t, recap: recap || t.recap, ask: ask || undefined } : t)),
+  }
+}
+
+/** One request as the ledger keeps it, or null for a prompt with nothing typed in it. */
+export function newTurn(l: Ledger, text: string, at: number): Ledger | null {
+  const clean = promptText(text).slice(0, 240)
+  if (!clean) return null
+  return { ...l, turns: [...l.turns, { n: l.turns.length + 1, text: clean, at, endedAt: null, auto: isAutomated(text) }].slice(-120) }
+}
+
+/** The app's own tools, which tell the turn's story rather than do its work. */
+export const PLAN_TOOL = 'mcp__ccd_turn__update_plan'
+export const WRAP_TOOL = 'mcp__ccd_turn__wrap_up'
+
+/** Calls the map leaves out of the work: housekeeping, the app's plumbing and its own probe. */
+export function isPlumbing(tool: string): boolean {
+  return PLUMBING.has(tool) || tool.startsWith('mcp__session-map__') || tool.startsWith('mcp__ccd_')
+}
+
+// ---------------------------------------------------------------- the chat's history
+
+/**
+ * One row of the session's transcript file, as much of it as the map reads: who wrote it, when,
+ * and its blocks (text, tool_use, tool_result). Rows the map does not read are passed over.
+ */
+export type HistoryRow = {
+  type?: string
+  timestamp?: string
+  isMeta?: boolean
+  isSidechain?: boolean
+  message?: { content?: unknown }
+}
+
+type Block = { type?: string; text?: unknown; id?: unknown; name?: unknown; input?: unknown; tool_use_id?: unknown; is_error?: unknown; content?: unknown }
+
+const CONTINUED = /^This session is being continued from a previous conversation/
+const INTERRUPTED = /^\[Request interrupted by user/
+
+function blocksOf(content: unknown): Block[] {
+  if (typeof content === 'string') return [{ type: 'text', text: content }]
+  return Array.isArray(content) ? (content.filter(b => b && typeof b === 'object') as Block[]) : []
+}
+
+function resultText(c: unknown): string {
+  if (typeof c === 'string') return c
+  if (Array.isArray(c)) return (c as Block[]).filter(b => b?.type === 'text').map(b => str(b.text)).join('\n')
+  return ''
+}
+
+/**
+ * The chat told again from its transcript, for a ledger that missed it: the map loaded after the
+ * chat began, or the app restarted and the session's state with it. It reads what live tracking
+ * reads (each request typed, each tool call and its outcome, the task list, the wrap-up) through
+ * the same steps, with the times the transcript stamped. `base` keeps what is not history: the
+ * window's vitals, the folder, the model and the projects followed.
+ */
+export function replay(rows: HistoryRow[], base: Ledger): Ledger {
+  let l: Ledger = { ...base, steps: [], turns: [], touches: [], results: [], live: [], plan: [], planTurn: 0, isWorking: false, asking: null, mainTurn: null, startedAt: null }
+  const calls = new Map<string, { tool: string; args: Record<string, unknown>; at: number }>()
+  let last = 0
+  const close = (end: TurnEnd, at: number) => {
+    const t = l.turns[l.turns.length - 1]
+    if (!t || t.endedAt !== null) return
+    const endedAt = Math.max(t.at, at)
+    l = { ...l, turnEndedAt: endedAt, turns: l.turns.map((x, i) => (i === l.turns.length - 1 ? { ...x, endedAt, end, workMs: endedAt - x.at } : x)) }
+  }
+  for (const row of rows) {
+    if (row.isSidechain || (row.type !== 'user' && row.type !== 'assistant')) continue
+    const at = Date.parse(str(row.timestamp)) || last
+    const blocks = blocksOf(row.message?.content)
+    if (row.type === 'assistant') {
+      for (const b of blocks) {
+        if (b.type === 'tool_use' && typeof b.id === 'string') {
+          calls.set(b.id, { tool: str(b.name), args: (b.input && typeof b.input === 'object' ? b.input : {}) as Record<string, unknown>, at })
+        }
+      }
+      last = at
+      continue
+    }
+    const answered = blocks.filter(b => b.type === 'tool_result')
+    if (answered.length) {
+      for (const b of answered) {
+        const id = str(b.tool_use_id)
+        const c = calls.get(id)
+        if (!c) continue
+        calls.delete(id)
+        const ok = b.is_error !== true
+        if (c.tool === PLAN_TOOL) {
+          if (ok) l = withPlan(l, c.args)
+        } else if (c.tool === WRAP_TOOL) {
+          l = withWrap(l, c.args)
+        } else if (!isPlumbing(c.tool)) {
+          const kind = classify(c.tool, str(c.args.command))
+          l = settle(l, { id, tool: c.tool, args: c.args, kind, label: describe(c.tool, c.args), at: c.at, ok, text: resultText(b.content), agent: null }, at)
+        }
+      }
+      last = at
+      continue
+    }
+    if (row.isMeta) continue
+    const text = blocks
+      .filter(b => b.type === 'text')
+      .map(b => str(b.text))
+      .join('\n')
+    if (CONTINUED.test(text.trim())) continue
+    if (INTERRUPTED.test(text.trim())) {
+      close('aborted', last || at)
+      continue
+    }
+    if (!promptText(text)) continue
+    close('answer', last || at)
+    l = newTurn(l, text, at) ?? l
+    last = at
+  }
+  close('answer', last)
+  return l
+}
+
 /** Where the task list stands: the step in progress and how far along it is. */
 export function planPlace(plan: PlanItem[]): { done: number; total: number; current: PlanItem | null; index: number } {
   const index = plan.findIndex(x => x.status === 'in_progress')

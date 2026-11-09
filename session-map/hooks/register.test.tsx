@@ -414,3 +414,46 @@ test('a new file outside git opens whole, not just the first lines kept while it
   expect(diff).toContain('line 120')
   await ui.unmount()
 })
+
+test('a chat the map missed is told again from its transcript', async ($, on) => {
+  engine(on, ['process.run'])
+  const at = (m: number) => new Date(Date.UTC(2026, 10, 9, 8, m)).toISOString()
+  const rows = [
+    { type: 'user', timestamp: at(0), message: { content: 'Make the sidebar better' } },
+    { type: 'assistant', timestamp: at(1), message: { content: [{ type: 'tool_use', id: 'p1', name: PLAN, input: { items: [{ content: 'Look', status: 'in_progress' }] } }] } },
+    { type: 'user', timestamp: at(1), message: { content: [{ type: 'tool_result', tool_use_id: 'p1', content: 'ok' }] } },
+    { type: 'assistant', timestamp: at(2), message: { content: [{ type: 'tool_use', id: 'e1', name: 'Edit', input: { file_path: `${PROJECT}/a.ts`, old_string: 'a\n', new_string: 'b\nc\n' } }] } },
+    { type: 'user', timestamp: at(3), message: { content: [{ type: 'tool_result', tool_use_id: 'e1', content: 'ok' }] } },
+    { type: 'assistant', timestamp: at(4), message: { content: [{ type: 'tool_use', id: 'w1', name: WRAP, input: { recap: 'The sidebar is calmer now.' } }] } },
+    { type: 'user', timestamp: at(4), message: { content: [{ type: 'tool_result', tool_use_id: 'w1', content: 'ok' }] } },
+    { type: 'user', timestamp: at(5), isMeta: true, message: { content: 'Base directory for this skill: /x' } },
+    { type: 'user', timestamp: at(6), message: { content: '<command-name>/map</command-name>' } },
+    { type: 'user', timestamp: at(10), message: { content: 'Now the header' } },
+    { type: 'user', timestamp: at(11), message: { content: [{ type: 'text', text: '[Request interrupted by user]' }] } },
+  ]
+  let asked: string[] = []
+  on('session.turns', () => ({ value: 2 }))
+  on('session.id', () => ({ value: 'chat-1' }))
+  on('process.run', (_: unknown, e: any) => {
+    if (e.argv?.[3] === 'session-history') {
+      asked = e.argv
+      return { value: { exitCode: 0, stdout: `{"cut short\n${rows.map(r => JSON.stringify(r)).join('\n')}\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    return { value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  // The transcript is read in the background: give it a moment.
+  for (let i = 0; i < 50 && !asked.length; i++) await new Promise(r => setTimeout(r, 10))
+  await new Promise(r => setTimeout(r, 50))
+  expect(asked[4]).toBe('chat-1')
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const all = (await texts(ui)).join('\n')
+  expect(all).toContain('Make the sidebar better')
+  expect(all).toContain('Now the header')
+  expect(all).not.toContain('Base directory')
+  expect(all).toContain('2 requests')
+  // The last request was stopped by hand; the first kept its recap.
+  expect(all).toContain('Stopped')
+  await ui.unmount()
+})

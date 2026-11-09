@@ -4,9 +4,8 @@ import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 import type { Kind, Ledger, PlanItem, Probe, Repo, TurnEnd, View } from '../types'
 import { badge, DONE, chevron, glyph, INK, liveDot, moodColor, QUIET, rings, RINGS_H, ROW, timelineRow, track, WAIT } from './art'
 import type { Mood } from './art'
-import { diffOf, gitTrouble, rootOf, scan } from './git'
+import { diffOf, gitTrouble, rebase, rootOf, scan } from './git'
 import {
-  applyPlan,
   begin,
   changeGroups,
   clip,
@@ -15,19 +14,24 @@ import {
   classify,
   describe,
   EMPTY,
-  isAutomated,
+  headTurn,
+  isPlumbing,
   newFileDiff,
+  newTurn,
   pathOf,
+  PLAN_TOOL,
   planPlace,
-  promptText,
-  PLUMBING,
+  replay,
   settle,
   short,
   since,
   stories,
   str,
+  withPlan,
+  withWrap,
+  WRAP_TOOL,
 } from './model'
-import type { Chip, FileRow, Group, Story } from './model'
+import type { Chip, FileRow, Group, HistoryRow, Story } from './model'
 
 // One pane beside the chat that answers three questions at a glance:
 //   Now          what Claude is doing this second, where the task list stands,
@@ -46,9 +50,6 @@ const ledger = atom({ plugin: 'session-map', key: 'ledger' } as const, EMPTY, { 
 const VIEW0: View = { openPath: null, openDiff: null, openRepos: [], showAllRequests: false, tick: 0, copied: null }
 const view = atom({ plugin: 'session-map', key: 'view' } as const, VIEW0, { shape: 'view-3' })
 const probe = atom({ plugin: 'session-map', key: 'probe' } as const, null as Probe | null)
-
-const PLAN_TOOL = 'mcp__ccd_turn__update_plan'
-const WRAP_TOOL = 'mcp__ccd_turn__wrap_up'
 
 /** What the eyebrow says while Claude does each kind of work. */
 const DOING: Record<Kind, string> = {
@@ -84,6 +85,9 @@ export const register: Register = on => {
       .catch(() => undefined)
     void openPane($, false)
     await boot($)
+    // Apart from boot, so a failed step there costs nothing here; and in the background, as
+    // reading a long transcript takes a moment.
+    void restore($)
     return result
   })
 
@@ -166,7 +170,7 @@ export const register: Register = on => {
       }
     }
     // App housekeeping (other mods rename chats through mcp__ccd_*) is not the work.
-    if (PLUMBING.has(e.tool) || e.tool.startsWith('mcp__session-map__') || e.tool.startsWith('mcp__ccd_')) return next(e)
+    if (isPlumbing(e.tool)) return next(e)
     const id = e.tool_use_id ?? `${e.tool}-${Date.now()}`
     const kind = classify(e.tool, str(args.command))
     const label = describe(e.tool, args)
@@ -387,15 +391,6 @@ function vitalsAlt(l: Ledger): string {
 
 function planAlt(plan: PlanItem[]): string {
   return plan.map((p, i) => `${i + 1}. ${p.text} (${p.status.replace('_', ' ')})`).join('\n')
-}
-
-/** The number of the request a turn's work belongs to: the last one Tristan typed. */
-function headTurn(l: Ledger): number {
-  for (let i = l.turns.length - 1; i >= 0; i--) {
-    const t = l.turns[i]
-    if (t && !(t.auto ?? isAutomated(t.text))) return t.n
-  }
-  return l.turns[l.turns.length - 1]?.n ?? 0
 }
 
 // ---------------------------------------------------------------- links
@@ -680,30 +675,91 @@ async function vitals($: EngineInterface, context: RawContext, limits: RawLimit[
 }
 
 async function noteRequest($: EngineInterface, text: string) {
-  const clean = promptText(text).slice(0, 240)
-  if (!clean) return
-  const auto = isAutomated(text)
-  await safely($, l => ({ ...l, turns: [...l.turns, { n: l.turns.length + 1, text: clean, at: Date.now(), endedAt: null, auto }].slice(-120) }))
+  const at = Date.now()
+  await safely($, l => newTurn(l, text, at) ?? l)
 }
 
 async function notePlan($: EngineInterface, args: Record<string, unknown>) {
-  await safely($, l => {
-    const n = headTurn(l)
-    // A fresh list starts this request's plan; steps alone move the one it has.
-    const base = Array.isArray(args.items) || l.planTurn === n ? (l.plan ?? []) : []
-    return { ...l, plan: applyPlan(base, args), planTurn: n }
-  })
+  await safely($, l => withPlan(l, args))
 }
 
 async function noteWrap($: EngineInterface, args: Record<string, unknown>) {
-  const recap = clip(str(args.recap), 400)
-  const ask = clip(str(args.ask), 160)
-  await safely($, l => ({
-    ...l,
-    // The wrap-up checks off the task list.
-    plan: (l.plan ?? []).map(p => ({ ...p, status: 'completed' as const })),
-    turns: l.turns.map((t, i) => (i === l.turns.length - 1 ? { ...t, recap: recap || t.recap, ask: ask || undefined } : t)),
-  }))
+  await safely($, l => withWrap(l, args))
+}
+
+/**
+ * Reads the chat's own transcript file, trimmed to what `replay` reads, newest last. `jq` cuts
+ * the bulk (tool records, request copies) before it crosses `$`; without it `grep` keeps the
+ * user and assistant rows whole. Either way the newest 4 MB at most: a first line cut short
+ * does not parse and is passed over.
+ */
+const HISTORY = [
+  'f=$(ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$1".jsonl 2>/dev/null | head -n 1)',
+  '[ -n "$f" ] || exit 3',
+  'if command -v jq >/dev/null 2>&1; then jq -c "$2" "$f" 2>/dev/null; else grep -E \'"type":"(user|assistant)"\' "$f"; fi | tail -c 4000000',
+].join('\n')
+
+const CUT = 'if type == "string" then .[0:$n] else . end'
+const HISTORY_JQ = [
+  'def cut($n): ' + CUT + ';',
+  'select((.type == "user" or .type == "assistant") and (.isSidechain | not))',
+  '| { type, timestamp, isMeta, message: { content: (.message.content | if type == "array" then map(',
+  '    if .type == "text" then { type, text: (.text | cut(4000)) }',
+  '    elif .type == "tool_use" then { type, id, name, input: (.input | if type == "object" then map_values(cut(20000)) else {} end) }',
+  '    elif .type == "tool_result" then { type, tool_use_id, is_error, content: (.content | if type == "array" then map(select(.type == "text") | .text) | join("\\n") else . end | cut(4000)) }',
+  '    else empty end) else cut(4000) end) } }',
+].join('\n')
+
+/**
+ * Tells the chat again from its transcript when the ledger missed some of it: the map loaded
+ * after the chat began, or a restart took the session's state. Live tracking stays the source
+ * while it runs; this only fills a ledger that holds fewer requests than the transcript.
+ */
+async function restore($: EngineInterface) {
+  try {
+    const l0 = await read($, ledger)
+    const typed = await $.session.turns().catch(() => 0)
+    if (l0.turns.length > 0 && typed > 0 && l0.turns.length >= typed) return
+    const id = await $.session.id()
+    const r = await $.process.run(['sh', '-c', HISTORY, 'session-history', id, HISTORY_JQ], { timeoutMs: 30000 })
+    if (!r.stdout) {
+      if (r.exitCode !== 3) lastError = `restore: exit ${r.exitCode} ${String(r.stderr).slice(0, 200)}`
+      return
+    }
+    const rows: HistoryRow[] = []
+    for (const line of r.stdout.split('\n')) {
+      try {
+        if (line) rows.push(JSON.parse(line) as HistoryRow)
+      } catch {
+        // The first line of a cut read, or one written as it was read.
+      }
+    }
+    let since = 0
+    let isRestored = false
+    await safely($, l => {
+      const told = replay(rows, l)
+      if (told.turns.length <= l.turns.length) return l
+      isRestored = true
+      since = told.turns[0]?.at ?? 0
+      if (!l.isWorking) return told
+      // A turn running now keeps running: its end is live tracking's to note.
+      const turns = told.turns.map((t, i) => (i === told.turns.length - 1 ? { ...t, endedAt: null, end: undefined } : t))
+      return { ...told, turns, isWorking: true, live: l.live, mainTurn: l.mainTurn, startedAt: l.startedAt, asking: l.asking }
+    })
+    if (!isRestored) return
+    const l = await read($, ledger)
+    for (const dir of new Set(l.touches.map(t => t.path.slice(0, t.path.lastIndexOf('/'))).slice(-40))) await adopt($, `${dir}/.`)
+    // What changed in git since the chat began is its work, not only what changed since the map did.
+    if (since) {
+      const followed = (await read($, ledger)).repos
+      const based: Repo[] = []
+      for (const repo of followed) based.push(await rebase($, repo, since))
+      await safely($, x => ({ ...x, repos: x.repos.map(r => based.find(b => b.root === r.root) ?? r) }))
+    }
+    await rescan($)
+  } catch (err) {
+    lastError = `restore: ${String(err)}`
+  }
 }
 
 async function startTurn($: EngineInterface, turnId: string) {
