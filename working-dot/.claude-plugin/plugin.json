@@ -1,1 +1,16 @@
-{ "name": "working-dot", "version": "0.2.0", "description": "Puts a green dot in front of a chat's sidebar title while Claude is working in it, and removes it when the turn ends." }
+{
+  "name": "working-dot",
+  "version": "0.2.0",
+  "description": "Puts a green dot in front of a chat's sidebar title while Claude is working in it, and removes it when the turn ends.",
+  "license": "MIT",
+  "author": {
+    "name": "Tristan Rafe Muzzu"
+  },
+  "homepage": "https://github.com/tristanmuzzu/claude-mods#working-dot",
+  "repository": "https://github.com/tristanmuzzu/claude-mods",
+  "keywords": [
+    "sidebar",
+    "status",
+    "desktop"
+  ]
+}

@@ -4,7 +4,8 @@
 
 import type { EngineInterface } from 'claude-code'
 
-import type { Commit, Repo, RepoFile } from '../types'
+import type { Commit, PrStatus, Repo, RepoFile } from '../types'
+import { prStatusOf } from './model'
 
 const roots: Record<string, string | null> = {}
 
@@ -20,6 +21,11 @@ async function git($: EngineInterface, cwd: string, args: string[]): Promise<str
     gitTrouble.last = `git ${args[0]} in ${cwd}: ${String(err).slice(0, 300)}`
     return null
   }
+}
+
+/** The root already found for `dir`: a string, null for no repository, undefined when not looked up yet. */
+export function knownRoot(dir: string): string | null | undefined {
+  return dir in roots ? (roots[dir] ?? null) : undefined
 }
 
 /** The repository root that holds `dir`, or null; remembered per folder. */
@@ -39,6 +45,17 @@ export async function scan($: EngineInterface, root: string, was: Repo | null, n
   const head = ((await git($, root, ['rev-parse', 'HEAD'])) ?? '').trim()
   const headAtStart = was?.headAtStart ?? head
   const parsed = parseStatus(status, numstat)
+  // Every file dirty at the first look is older than the session, however many there are. Only the
+  // files kept are capped, and the session's own come first, so a busy repository cannot push them out.
+  const baseline = was ? was.baseline : parsed.files.map(f => f.rel)
+  const old = new Set(baseline)
+  const files = [...parsed.files.filter(f => !old.has(f.rel)), ...parsed.files.filter(f => old.has(f.rel))].slice(0, 400)
+  // Folders that held untracked files before the session hold tool bookkeeping (snapshots, caches):
+  // new files there are left out. Anywhere else a new file is counted, line by line.
+  const quiet = was?.quiet ?? [...new Set(parsed.files.filter(f => f.code === '??' && old.has(f.rel)).map(f => topOf(f.rel)).filter(Boolean))]
+  const fresh = files.filter(f => f.code === '??' && !old.has(f.rel) && !quiet.includes(topOf(f.rel))).slice(0, 80)
+  const counts = await lineCounts($, root, fresh.map(f => f.rel))
+  for (const f of fresh) f.added = counts[f.rel] ?? 0
   // Line counts since the session started: what was committed since counts too.
   const sinceStat = headAtStart && head && head !== headAtStart ? ((await git($, root, ['diff', '--numstat', headAtStart])) ?? '') : numstat
   const changed = parseNumstat(sinceStat)
@@ -55,11 +72,67 @@ export async function scan($: EngineInterface, root: string, was: Repo | null, n
     ahead: parsed.ahead,
     behind: parsed.behind,
     headAtStart,
-    baseline: was ? was.baseline : parsed.files.map(f => f.rel),
-    files: parsed.files,
+    baseline,
+    quiet,
+    files,
     changed,
     commits,
     scannedAt: now,
+  }
+}
+
+/**
+ * A repository as it stood when the chat began, for a map that starts late: the commit HEAD was
+ * on then, and the changed files nobody has touched since (older than the chat, so not its work).
+ */
+export async function rebase($: EngineInterface, repo: Repo, since: number): Promise<Repo> {
+  const before = await git($, repo.root, ['rev-list', '-1', `--before=${Math.floor(since / 1000)}`, 'HEAD'])
+  const baseline: string[] = []
+  for (const f of repo.files) {
+    const stat = await $.fs.stat(`${repo.root}/${f.rel}`).catch(() => null)
+    // A file gone since cannot say when; deleting it is more likely the chat's work.
+    if (stat && stat.mtimeMs < since) baseline.push(f.rel)
+  }
+  return { ...repo, headAtStart: before?.trim() || repo.headAtStart, baseline }
+}
+
+/** The first folder of a path inside the repository; empty for a file at its root. */
+export function topOf(rel: string): string {
+  const i = rel.indexOf('/')
+  return i > 0 ? rel.slice(0, i) : ''
+}
+
+/** Lines in each of a few files git does not track yet; a binary file counts 0. */
+async function lineCounts($: EngineInterface, root: string, rels: string[]): Promise<Record<string, number>> {
+  if (!rels.length) return {}
+  try {
+    const r = await $.process.run(['grep', '-cIH', '', '--', ...rels.map(x => `${root}/${x}`)], { timeoutMs: 8000 })
+    return parseCounts(r.stdout, root)
+  } catch {
+    return {}
+  }
+}
+
+/** `grep -cH` output (`path:count` per line) as counts by path inside the repository. */
+export function parseCounts(out: string, root: string): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const line of out.split('\n')) {
+    const i = line.lastIndexOf(':')
+    if (i <= 0) continue
+    const path = line.slice(0, i)
+    const rel = path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path
+    counts[rel] = Number(line.slice(i + 1)) || 0
+  }
+  return counts
+}
+
+/** Where a pull request stands on GitHub, or null when `gh` cannot say (offline, signed out). */
+export async function prOf($: EngineInterface, url: string, now: number): Promise<PrStatus | null> {
+  try {
+    const r = await $.process.run(['gh', 'pr', 'view', url, '--json', 'state,isDraft,statusCheckRollup'], { timeoutMs: 15000 })
+    return r.exitCode === 0 ? prStatusOf(r.stdout, now) : null
+  } catch {
+    return null
   }
 }
 
@@ -84,11 +157,11 @@ export function cutDiff(diff: string): string {
   const lines = diff.split('\n')
   const start = lines.findIndex(l => l.startsWith('--- '))
   const body = start >= 0 ? lines.slice(start) : lines
-  if (body.length <= 120) return body.join('\n').trimEnd()
+  if (body.length <= 2000) return body.join('\n').trimEnd()
   // Keep whole hunks only, so the result still parses as a diff.
   const kept: string[] = []
   for (const line of body) {
-    if (line.startsWith('@@') && kept.length > 100) break
+    if (line.startsWith('@@') && kept.length > 1900) break
     kept.push(line)
   }
   return kept.join('\n').trimEnd()
@@ -121,7 +194,7 @@ export function parseStatus(status: string, numstat: string) {
     rel = rel.replace(/^"(.*)"$/, '$1')
     return { rel, code, added: counts[rel]?.added ?? 0, removed: counts[rel]?.removed ?? 0 }
   })
-  return { branch, hasUpstream, ahead, behind, files: files.slice(0, 400) }
+  return { branch, hasUpstream, ahead, behind, files }
 }
 
 /** `git diff --numstat` lines as files with their counts (binary files count 0). */

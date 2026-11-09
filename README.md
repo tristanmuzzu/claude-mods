@@ -1,6 +1,37 @@
 # claude-mods
 
-Tristan's own Claude Code mods, and the marketplace they install from.
+Three mods for Claude Code: small plugins that change Claude's own interface.
+They are built for the desktop app's Code tab and work in the terminal where
+noted.
+
+| Mod | What it adds |
+| --- | --- |
+| <img src="session-map/.claude-plugin/icon.png" width="40"> **session-map** | A side pane that shows what Claude is doing, what each request came to, and where your changes stand in git |
+| <img src="working-dot/.claude-plugin/icon.png" width="40"> **working-dot** | A green dot on a chat's sidebar title while Claude works in it |
+| <img src="plan-meter/.claude-plugin/icon.png" width="40"> **plan-meter** | Context and plan limits in one line above the prompt |
+
+## Install
+
+In Claude Code, add this repository as a marketplace, then install the mods
+you want:
+
+```text
+/plugin marketplace add tristanmuzzu/claude-mods
+/plugin install session-map@tristan-mods
+/plugin install working-dot@tristan-mods
+/plugin install plan-meter@tristan-mods
+```
+
+Or from a shell:
+
+```bash
+claude plugin marketplace add tristanmuzzu/claude-mods
+claude plugin install session-map@tristan-mods --scope user
+```
+
+Restart the app (or start a new session) to load them. Updates arrive with
+`claude plugin marketplace update tristan-mods`. They need a Claude Code
+build that runs mods (tested on 2.1.319).
 
 ## plan-meter
 
@@ -47,43 +78,72 @@ Fix login bug         <- idle
 ## session-map
 
 A side pane that shows what is going on in one chat at a glance, read by
-shape and colour rather than text. Top to bottom:
+shape and colour rather than text.
+
+<img src="docs/session-map.png" width="380" alt="The session map pane: what Claude is doing now with a heartbeat of its steps, rings for context and plan limits, the chat's requests as a timeline, and the projects' git changes">
+
+Top to bottom:
 
 - **Now**: an animated icon acts out what Claude is doing (an eye while it
   reads, a pencil while it edits, a terminal while a command runs, a globe for
   web and screen work, orbiting dots for helpers, bouncing dots while it
-  thinks), with the step in one line and how long it has taken. Under it, the
-  chat's task list as a track with the step in progress. When Claude waits on
-  you it says so ("Needs your answer", "Your call"); when a request finishes,
-  the first line of its own recap is the headline.
+  thinks), with the step in one line and how long it has taken. Under it a
+  heartbeat: one bar per step of the request, in the colour of its kind of
+  work and as tall as it took (red when it failed), the step running now
+  breathing at the right end. Then the chat's task list as a track with the
+  step in progress, and what else is running: background commands, helpers,
+  monitors, workflows and wake-ups, each with its time. When Claude waits on
+  you it says so ("Needs your answer", "Your call"); when a turn ends with work
+  still running in the background it says what it waits on; when a request
+  finishes, the first line of its own recap is the headline.
 - **Vitals**: rings for context before auto-compaction, the 5-hour limit and
   the weekly limit, with reset times.
 - **This chat**: the last four requests as a timeline (Show more opens the rest below, same size): a node per request (breathing
   while it runs, a tick when done, amber when it left you a question), one
   line of what you asked, how long Claude worked on it, and icons with counts
   for edits, commands, lookups, web steps, helpers and commits (pushed or
-  not). Hover a request for the whole text and its recap. Background-task and
-  app messages fold into the request they belong to.
+  not). Press a request to open it: what you asked in full, its heartbeat,
+  what it did and how long it took, its recap and question, the files it
+  changed (each opens its diff), the commits it made and its links.
+  Background-task and app messages fold into the request they belong to.
+  A pull request link says where it stands: checks running, passing or
+  failing, merged or closed.
 - **Changes**: one line per project with where it stands in git ("3 files
   not committed", "2 commits, all pushed"). Press it to list every changed
-  file Claude edited, plus files commands changed with real line changes (eight at a
-  time, Show more for the rest). Press a file for its diff, or ✎ to
+  file Claude edited, plus files commands changed or created with real lines
+  (eight at a time, Show more for the rest). Press a file for its diff, with
+  the lines' real numbers, or ✎ to
   open it in your code editor: the first of VS Code, Cursor, Zed, Codium,
   Sublime Text or GNOME Text Editor that is installed.
 
-It reads the session's own tool calls (including the app's task list and
-wrap-up) and runs read-only git commands (`status`, `diff`, `log`). It makes
-no model calls and no network requests and writes no files; the one program
-it starts on its own is your editor, when you press Open. `/map` opens it
-again if you close it.
+- **Other chats**: every other chat from the last day, the ones that need
+  you first: a mark for where each stands (needs you, working, waiting on
+  background work, done), its title, how long ago it moved, a small heartbeat
+  of its current request and one line on what it is doing or asking. Press a
+  title to go to that chat. Each chat's map shares a small note on where it
+  stands in `~/.local/state/claude-session-map/chats/`; a chat whose map is
+  older, or that went silent while working, shows as a quiet row. Desktop
+  app only.
 
-## Install
+It reads the session's own tool calls (including the app's task list and
+wrap-up) and runs read-only git commands (`status`, `diff`, `log`) and `grep`
+to count lines in new files. It makes no model calls; the one file it writes is its own chat's note. Its
+one network request is `gh pr view` for pull requests the chat opened, once a
+minute while one is open and recent or its checks run. The one program it
+starts on its own is your editor, when you press ✎. `/map` opens it again if
+you close it.
+
+## Developing
 
 ```bash
-claude plugin marketplace add ~/projects/claude-mods
-claude plugin install plan-meter@tristan-mods --scope user
-claude plugin install working-dot@tristan-mods --scope user
-claude plugin install session-map@tristan-mods --scope user
+git clone https://github.com/tristanmuzzu/claude-mods
+claude plugin marketplace add ./claude-mods
+claude plugin test session-map
 ```
 
-Test: `claude plugin test plan-meter` (or `session-map`).
+`claude plugin test <mod>` runs a mod's tests from the repository root;
+`claude plugin validate <mod>` checks it the way the engine loads it.
+
+## License
+
+MIT

@@ -1,7 +1,7 @@
 // The pane's drawings, as SVG strings: the animated status glyph, the task
 // track and the small marks beside each request. One colour language runs
 // through all of them: INK by kind of work, WAIT for anything that needs
-// Tristan, DONE for finished, FAIL for stopped or failed.
+// you, DONE for finished, FAIL for stopped or failed.
 
 import type { Kind, Limit, PlanItem, Vitals } from '../types'
 import type { Story } from './model'
@@ -196,7 +196,7 @@ function resets(l: Limit): string {
 }
 
 /** 12px icons, one per kind of work, in the kind's colour: the same language as the big glyph. */
-function icon(k: Kind | 'commit', x: number, y: number, c: string): string {
+function icon(k: Kind | 'commit' | 'clock', x: number, y: number, c: string): string {
   const st = `fill="none" stroke="${c}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"`
   let body = ''
   switch (k) {
@@ -218,6 +218,9 @@ function icon(k: Kind | 'commit', x: number, y: number, c: string): string {
     case 'publish':
       body = `<path d="M6 10 V2.5 M3 5.2 L6 2.2 L9 5.2" ${st}/>`
       break
+    case 'clock':
+      body = `<circle cx="6" cy="6" r="5" ${st}/><path d="M6 3.2 V6 L8 7.3" ${st}/>`
+      break
     case 'commit':
       body = `<path d="M0.5 6 H3.4 M8.6 6 H11.5" ${st}/><circle cx="6" cy="6" r="2.6" ${st}/>`
       break
@@ -232,47 +235,119 @@ const ICON_ORDER: Kind[] = ['edit', 'run', 'read', 'web', 'agent', 'publish']
 /** Height of one request's row in the timeline, in CSS pixels. */
 export const ROW = 56
 
+/** The node a request shows: breathing while it runs, a tick, a question, a stop. */
+export function nodeOf(s: Story): MarkKind {
+  return s.isNow ? 'live' : s.end === 'aborted' || s.end === 'error' || s.end === 'refusal' ? 'stopped' : s.ask ? 'ask' : s.ms !== null ? 'done' : 'quiet'
+}
+
+export const RAIL_W = 24
+
 /**
- * One request as a row of the rail, drawn at a fixed size so a long chat
- * never shrinks it: a node (breathing while it runs, a tick when done, amber
- * when it left you a question, red when it stopped), one line of what you
- * asked, how long Claude worked, and icons with counts for what it did. The
- * rail runs into the rows above and below. Hover for the text and recap.
+ * The left column of a request's row: its node, and the rail that runs into the rows above and
+ * below, drawn at a fixed height so a long chat never shrinks it. An open request has no rail
+ * below: its details card sits there.
  */
-export function timelineRow(s: Story, hasAbove: boolean, hasBelow: boolean, width: number, live: string): string {
-  const node = s.isNow ? 'live' : s.end === 'aborted' || s.end === 'error' ? 'stopped' : s.ask ? 'ask' : s.ms !== null ? 'done' : 'quiet'
+export function railNode(s: Story, hasAbove: boolean, hasBelow: boolean, live: string): string {
   const railUp = hasAbove ? `<rect x="9" y="0" width="2" height="5" fill="#ffffff" fill-opacity="0.09"/>` : ''
   const railDown = hasBelow ? `<rect x="9" y="24" width="2" height="${ROW - 24}" fill="#ffffff" fill-opacity="0.09"/>` : ''
-  const dot = `<g transform="translate(1 5) scale(1.25)">${markBody(node, live)}</g>`
-  const dur = s.ms !== null ? since(s.ms) : ''
-  const titleRoom = Math.floor((width - 32 - dur.length * 8 - 12) / 7.9)
-  const title = `<text x="30" y="18" ${FONT} font-size="15" font-weight="${s.isNow ? 650 : 550}" fill="${s.isNow ? '#ffffff' : '#e3e3e3'}">${esc(clipTo(s.text, titleRoom))}</text>`
-  const durText = dur ? `<text x="${width - 2}" y="18" text-anchor="end" ${FONT} font-size="13" fill="${s.isNow ? live : '#8d939c'}">${esc(dur)}</text>` : ''
-  // Second line: when, then an icon and a count for each kind of work, then commits.
+  const dot = `<g transform="translate(1 5) scale(1.25)">${markBody(nodeOf(s), live)}</g>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${RAIL_W}" height="${ROW}" viewBox="0 0 ${RAIL_W} ${ROW}">${railUp}${railDown}${dot}</svg>`
+}
+
+export const META_H = 20
+
+/** A request's second line: when, an icon and a count for each kind of work, then its commits. */
+export function metaLine(s: Story, width: number, live: string): string {
   const parts: string[] = []
-  let x = 30
+  let x = 0
   const when = s.isNow ? 'now' : hhmm(s.at)
-  parts.push(`<text x="${x}" y="40" ${FONT} font-size="12.5" fill="${s.isNow ? live : '#8d939c'}">${when}</text>`)
+  parts.push(`<text x="${x}" y="14.5" ${FONT} font-size="12.5" fill="${s.isNow ? live : '#8d939c'}">${when}</text>`)
   x += when.length * 7.2 + 12
   for (const k of ICON_ORDER) {
     const n = s.counts[k]
     if (!n || x > width - 40) continue
-    parts.push(icon(k, x, 29.5, INK[k]))
-    parts.push(`<text x="${x + 18}" y="40" ${FONT} font-size="12.5" fill="#c2c6cc">${n}</text>`)
+    parts.push(icon(k, x, 4, INK[k]))
+    parts.push(`<text x="${x + 18}" y="14.5" ${FONT} font-size="12.5" fill="#c2c6cc">${n}</text>`)
     x += 18 + String(n).length * 7.4 + 13
   }
   if (s.commits && x < width - 60) {
     const c = s.unpushed ? WAIT : DONE
-    parts.push(icon('commit', x, 29.5, c))
-    parts.push(`<text x="${x + 18}" y="40" ${FONT} font-size="12.5" fill="${c}">${s.commits} ${s.unpushed ? 'not pushed' : 'pushed'}</text>`)
+    parts.push(icon('commit', x, 4, c))
+    parts.push(`<text x="${x + 18}" y="14.5" ${FONT} font-size="12.5" fill="${c}">${s.commits} ${s.unpushed ? 'not pushed' : 'pushed'}</text>`)
   }
-  const tip = [s.text, s.work ? `\n${s.work}` : '', s.recap ? `\n${s.recap}` : '', s.ask ? `\nAsked you: ${s.ask}` : ''].join('')
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${ROW}" viewBox="0 0 ${width} ${ROW}"><title>${esc(tip)}</title><rect width="${width}" height="${ROW}" fill="#000" fill-opacity="0"/>${railUp}${railDown}${dot}${title}${durText}${parts.join('')}</svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${META_H}" viewBox="0 0 ${width} ${META_H}">${parts.join('')}</svg>`
+}
+
+export const PULSE_H = 30
+
+/** A bar's height for a step that took `ms`: a blip for an instant, tall for minutes (log scale). */
+export function barHeight(ms: number): number {
+  const sec = Math.max(0, ms / 1000)
+  return 3 + 24 * Math.min(1, Math.log1p(sec) / Math.log1p(180))
+}
+
+type Beat = { kind: Kind; ms: number; ok?: boolean }
+
+/**
+ * The heartbeat: one bar per step, oldest at the left, in the colour of its kind of work and as
+ * tall as it took. A failed step is red. The step running now stands at the right end and breathes,
+ * growing as it runs; while Claude thinks between steps a small dot waits there instead.
+ */
+export function pulse(steps: Beat[], now: Beat | null, isThinking: boolean, width: number, live: string, height = PULSE_H): string {
+  const k = height / PULSE_H
+  const slot = Math.max(3, Math.round(5 * Math.sqrt(k)))
+  const w = slot > 3 ? 3 : 2
+  const room = Math.max(1, Math.floor(width / slot) - (now || isThinking ? 2 : 0))
+  const shown = steps.slice(-room)
+  const mid = height / 2
+  const bar = (x: number, h: number, c: string) =>
+    `<rect x="${x}" y="${(mid - (h * k) / 2).toFixed(1)}" width="${w}" height="${(h * k).toFixed(1)}" rx="${w / 2}" fill="${c}"`
+  const parts = shown.map((b, i) => `${bar(i * slot, barHeight(b.ms), b.ok === false ? FAIL : INK[b.kind])}/>`)
+  const end = shown.length * slot + 4
+  if (now) {
+    const c = INK[now.kind]
+    parts.push(`${bar(end, barHeight(now.ms), c)}><animate attributeName="opacity" values="1;0.35;1" dur="1.2s" repeatCount="indefinite"/></rect>`)
+  } else if (isThinking) {
+    parts.push(`<circle cx="${end + 2}" cy="${mid}" r="${(2.5 * k + 0.5).toFixed(1)}" fill="${live}"><animate attributeName="opacity" values="1;0.3;1" dur="1.3s" repeatCount="indefinite"/></circle>`)
+  }
+  const line = `<rect x="0" y="${mid - 0.5}" width="${width}" height="1" fill="#ffffff" fill-opacity="0.07"/>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${line}${parts.join('')}</svg>`
+}
+
+/**
+ * The 16px mark beside another chat: a pulsing amber dot when it needs you, a breathing ring in the
+ * colour of its work while it works, a slow ring while background work runs, a tick when done,
+ * a grey dot when the map has no word from it.
+ */
+export function chatMark(state: 'needs' | 'working' | 'waiting' | 'done' | 'quiet', c: string): string {
+  let body = ''
+  if (state === 'needs') {
+    body = `<circle cx="8" cy="8" r="4.5" fill="${WAIT}"/><circle cx="8" cy="8" r="4.5" fill="none" stroke="${WAIT}" stroke-width="1.5"><animate attributeName="r" values="4.5;7.5" dur="1.6s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.9;0" dur="1.6s" repeatCount="indefinite"/></circle>`
+  } else if (state === 'working') {
+    body = `<circle cx="8" cy="8" r="3.5" fill="${c}"/><circle cx="8" cy="8" r="6" fill="none" stroke="${c}" stroke-width="1.4" stroke-dasharray="9 4"><animateTransform attributeName="transform" type="rotate" from="0 8 8" to="360 8 8" dur="2.4s" repeatCount="indefinite"/></circle>`
+  } else if (state === 'waiting') {
+    body = `<circle cx="8" cy="8" r="5.5" fill="none" stroke="${c}" stroke-width="1.6"><animate attributeName="opacity" values="1;0.35;1" dur="2.6s" repeatCount="indefinite"/></circle><circle cx="8" cy="8" r="2" fill="${c}"/>`
+  } else if (state === 'done') {
+    body = `<circle cx="8" cy="8" r="6.5" fill="${DONE}" fill-opacity="0.18"/><path d="M5 8.3 L7.2 10.4 L11.2 6" fill="none" stroke="${DONE}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>`
+  } else {
+    body = `<circle cx="8" cy="8" r="3" fill="${QUIET}" fill-opacity="0.7"/>`
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">${body}</svg>`
+}
+
+/** What each kind of background work looks like: its icon and colour. */
+export const BG_INK: Record<string, string> = { shell: INK.run, helper: INK.agent, workflow: INK.agent, monitor: INK.read, wakeup: '#c9b38a' }
+
+/** A 16px icon for one piece of background work; it breathes while the work runs. */
+export function bgIcon(kind: string): string {
+  const c = BG_INK[kind] ?? QUIET
+  const k = kind === 'shell' ? 'run' : kind === 'monitor' ? 'read' : kind === 'wakeup' ? 'clock' : 'agent'
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><g>${icon(k, 0.8, 0.8, c)}<animate attributeName="opacity" values="1;0.45;1" dur="2.4s" repeatCount="indefinite"/></g></svg>`
 }
 
 function clipTo(s: string, n: number): string {
   const one = s.replace(/\s+/g, ' ').trim()
-  return one.length > n ? `${one.slice(0, Math.max(1, n - 1))}…` : one
+  return one.length > n ? `${one.slice(0, Math.max(1, n - 1)).replace(/[\s.,;:…]+$/, '')}…` : one
 }
 
 function hhmm(t: number): string {
@@ -280,7 +355,8 @@ function hhmm(t: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-function since(ms: number): string {
+/** A short duration: 40s, 12m, 1h 05m. */
+export function span(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000))
   if (s < 60) return `${s}s`
   const m = Math.floor(s / 60)
