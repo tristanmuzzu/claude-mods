@@ -47,6 +47,15 @@ Top to bottom:
   and one line on what it is doing or asking. Four show at once, with Show
   more for the rest. Press a title to go to that chat. Desktop app only.
 
+## Privacy
+
+Session map keeps what it reads on your computer. It collects nothing for its
+author, has no server and no analytics, and makes no model calls. The one
+request that leaves your computer is `gh pr view` to GitHub, under your own
+`gh` login, for the pull requests your chat opened. Its only file is a small
+status note per chat in `~/.local/state/claude-session-map/chats/`, which you
+can delete at any time. The full list follows.
+
 ## What it reads, writes and runs
 
 Everything stays on your computer except one GitHub request, listed below.

@@ -15,5 +15,6 @@
     "git",
     "activity",
     "desktop"
-  ]
+  ],
+  "privacyPolicyUrl": "https://github.com/tristanmuzzu/claude-mods/blob/main/session-map/README.md#privacy"
 }
