@@ -105,7 +105,8 @@ test('the pane tells the request as a story and rolls changes up by project', as
   expect(diff).toContain('two')
   expect(diff).toContain('+')
   expect(diff).toContain('3')
-  expect(await button(ui, 'links:copy:Script: run.sh')).toBeTruthy()
+  // A script Claude wrote is not a result worth a line.
+  expect((await texts(ui)).some(t => /Script:|Copy run command/.test(t))).toBe(false)
   // Every listed file can be sent to the editor.
   await press(ui, `edit:${PROJECT}/a.ts`)
   expect(opened.map(a => a[a.length - 1])).toEqual([`${PROJECT}/a.ts`])
@@ -436,7 +437,7 @@ test('a chat the map missed is told again from its transcript', async ($, on) =>
   on('session.id', () => ({ value: 'chat-1' }))
   on('env.get', (_: unknown, e: any) => ({ value: e.name === 'HOME' ? '/home/t' : undefined }))
   on('session.cwd', () => ({ value: '/' }))
-  on('fs.stat', (_: unknown, e: any) => (String(e.path).endsWith('/projects/-/chat-1.jsonl') ? { value: { kind: 'file', size: 1, mtimeMs: 1 } } : { error: 'no such file' }))
+  on('fs.stat', (_: unknown, e: any) => (String(e.path).endsWith('/projects/-/chat-1.jsonl') ? { value: { kind: 'file', size: 1, mtimeMs: 1, isLink: false } } : { error: 'no such file' }))
   on('process.run', (_: unknown, e: any) => {
     if (e.argv?.[0] === 'tail') {
       asked = e.argv

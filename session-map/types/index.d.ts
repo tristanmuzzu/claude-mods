@@ -41,12 +41,11 @@ export type Touch = {
 
 /** Something that came out of the session and lives on after it. */
 export type Result = {
+  /** 'script': kept by older maps for a shell script Claude wrote; no longer shown. */
   kind: 'artifact' | 'pr' | 'repo' | 'script' | 'doc' | 'push'
   title: string
   detail: string
   href: string | null
-  /** For a script: the command that runs it. */
-  run: string | null
   at: number
   /** For a pull request: where it stands on GitHub, as last asked. */
   pr?: PrStatus
@@ -146,7 +145,6 @@ export type View = {
   /** The request opened to its details, by number. */
   openRequest?: number | null
   tick: number
-  copied: string | null
 }
 
 /** What one chat's map shares with the others' maps. */

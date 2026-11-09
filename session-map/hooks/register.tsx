@@ -83,7 +83,7 @@ const PANE = 'session-map'
 const TITLE = 'Session map'
 
 const ledger = atom({ plugin: 'session-map', key: 'ledger' } as const, EMPTY, { shape: 'ledger-2' })
-const VIEW0: View = { openPath: null, openDiff: null, openRepos: [], showAllRequests: false, tick: 0, copied: null }
+const VIEW0: View = { openPath: null, openDiff: null, openRepos: [], showAllRequests: false, tick: 0 }
 const view = atom({ plugin: 'session-map', key: 'view' } as const, VIEW0, { shape: 'view-3' })
 const probe = atom({ plugin: 'session-map', key: 'probe' } as const, null as Probe | null)
 const OTHERS0: Others = { apps: [], notes: [], at: 0 }
@@ -287,7 +287,7 @@ export const register: Register = on => {
     const showPlan = plan.length > 0 && l.planTurn === headTurn(l)
     const place = planPlace(plan)
     const shown = v.showAllRequests ? all : all.slice(0, STORIES_SHOWN)
-    const links = all.flatMap(s => s.chips.filter(c => c.href || c.run)).slice(0, 4)
+    const links = all.flatMap(s => s.chips.filter(c => c.href)).slice(0, 4)
     const mainLive = [...l.live].reverse().find(x => x.agent === null && x.kind !== 'agent') ?? null
     const latest = all[0] ?? null
     const beats = latest ? latest.steps : []
@@ -638,7 +638,7 @@ function requestCard($: EngineInterface, s: Story, v: View, files: Map<string, F
   const { Box, Text, Svg } = el
   const scope = `req${s.n}:`
   const rows = s.files.map(p => files.get(p)).filter((r): r is FileRow => Boolean(r))
-  const chips = s.chips.filter(c => c.href || c.run)
+  const chips = s.chips.filter(c => c.href)
   const facts = [s.work, s.ms !== null ? `${span(s.ms)} of work` : ''].filter(Boolean).join(' · ')
   return (
     <Box key={`card:${s.n}`} flexDirection="column" gap={1} padding={1} marginTop={1} marginBottom={1} backgroundColor="#232427" borderStyle="round" borderColor="#34363a">
@@ -707,7 +707,7 @@ function planAlt(plan: PlanItem[]): string {
 type Els = { Box: any; Text: any; Button: any; Link?: any; Svg?: any }
 
 function chipView($: EngineInterface, c: Chip, v: View, el: Els, scope: string) {
-  const { Box, Text, Button, Link } = el
+  const { Box, Text, Link } = el
   const key = `${scope}chip:${c.href ?? c.label}`
   if (c.href && Link) {
     return (
@@ -726,13 +726,6 @@ function chipView($: EngineInterface, c: Chip, v: View, el: Els, scope: string) 
       <Text size="footnote" color={TONE[c.tone]}>
         {c.label}
       </Text>
-      {c.run ? (
-        <Button key={pressKey(`${scope}copy:${c.label}`)} plain onPress={tap($, (press: { surface: string }) => copyRun($, c.run ?? '', press.surface))}>
-          <Text size="footnote" color={INK.run}>
-            {v.copied === c.run ? 'Copied' : 'Copy run command'}
-          </Text>
-        </Button>
-      ) : null}
     </Box>
   )
 }
@@ -1464,14 +1457,6 @@ async function openFile($: EngineInterface, r: FileRow, at: string) {
       .catch(() => '')
   }
   if (diff) await update($, view, x => (x.openPath === at ? { ...x, openDiff: diff } : x))
-}
-
-async function copyRun($: EngineInterface, text: string, surface: string) {
-  const done = await $.ui.copy({ text, surface: surface as never }).catch(() => ({ isCopied: false }))
-  if (done.isCopied) {
-    await update($, view, x => ({ ...x, copied: text }))
-    $.clock.after(2500, () => void update($, view, x => ({ ...x, copied: null })))
-  }
 }
 
 // ---------------------------------------------------------------- git, read-only

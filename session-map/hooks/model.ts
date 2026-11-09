@@ -130,7 +130,7 @@ export function settle(l: Ledger, s: Settle, now: number): Ledger {
     const href = /https:\/\/claude\.ai\/[^\s"'<>)\]]*artifact[^\s"'<>)\]]*/.exec(s.text)?.[0] ?? null
     if (href) {
       const title = str(s.args.title) || base(str(s.args.file_path)).replace(/\.[a-z]+$/i, '') || 'Artifact'
-      results = addResult(results, { kind: 'artifact', title, detail: 'Artifact page', href, run: null, at: s.at })
+      results = addResult(results, { kind: 'artifact', title, detail: 'Artifact page', href, at: s.at })
     }
   }
 
@@ -180,11 +180,11 @@ export function bashResults(cmd: string, text: string, at: number): Result[] {
   if (/\b(rejected|fatal:|error:)/i.test(text) && /\b(push|create)\b/.test(cmd)) return out
   if (/\bgh\s+pr\s+create\b/.test(cmd)) {
     const m = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/.exec(text)
-    if (m) out.push({ kind: 'pr', title: `Pull request in ${m[0].split('/')[4]}`, detail: m[0].replace('https://', ''), href: m[0], run: null, at })
+    if (m) out.push({ kind: 'pr', title: `Pull request in ${m[0].split('/')[4]}`, detail: m[0].replace('https://', ''), href: m[0], at })
   }
   if (/\bgh\s+repo\s+create\b/.test(cmd)) {
     const m = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+/.exec(text)
-    if (m) out.push({ kind: 'repo', title: `New repo ${m[0].split('/')[4]}`, detail: m[0].replace('https://', ''), href: m[0], run: null, at })
+    if (m) out.push({ kind: 'repo', title: `New repo ${m[0].split('/')[4]}`, detail: m[0].replace('https://', ''), href: m[0], at })
   }
   return out
 }
@@ -192,11 +192,8 @@ export function bashResults(cmd: string, text: string, at: number): Result[] {
 function createdResult(path: string, isNew: boolean, at: number): Result | null {
   if (!isNew) return null
   const p = place(path)
-  if (/\.sh$/.test(path)) {
-    return { kind: 'script', title: base(path), detail: p.root, href: null, run: `bash ${quote(path)}`, at }
-  }
   if (/\.(html|pdf|docx|xlsx|pptx|png|svg|mp4|gif)$/i.test(path) && !/\/(src|hooks|tests?|node_modules)\//.test(path)) {
-    return { kind: 'doc', title: base(path), detail: p.root, href: null, run: null, at }
+    return { kind: 'doc', title: base(path), detail: p.root, href: null, at }
   }
   return null
 }
@@ -616,7 +613,6 @@ export type Chip = {
   label: string
   href: string | null
   tone: Tone
-  run?: string | null
   /** Where a pull request stands, in a few words, and its colour. */
   status?: { label: string; tone: Tone } | null
 }
@@ -720,8 +716,9 @@ export function stories(l: Ledger, now: number): Story[] {
           tone: isPushed ? 'done' : 'warn',
         })
       }
-      for (const r of l.results.filter(x => inWindow(x.at)).slice(-4)) {
-        chips.push({ label: `${RESULT_WORD[r.kind] ?? ''}${r.title}`, href: r.href, tone: 'plain', run: r.run, status: r.pr ? prWords(r.pr) : null })
+      // Older maps also kept the scripts Claude wrote; those stay off the pane.
+      for (const r of l.results.filter(x => inWindow(x.at) && x.kind !== 'script').slice(-4)) {
+        chips.push({ label: `${RESULT_WORD[r.kind] ?? ''}${r.title}`, href: r.href, tone: 'plain', status: r.pr ? prWords(r.pr) : null })
       }
       const counts: Partial<Record<Kind, number>> = {}
       for (const s of steps) counts[s.kind] = (counts[s.kind] ?? 0) + 1
@@ -851,7 +848,7 @@ export function bgAfterPrompt(list: Bg[], text: string, now: number): Bg[] {
   return list.filter(b => b.id !== done && !(b.kind === 'wakeup' && b.until != null && b.until <= now + 5000))
 }
 
-const RESULT_WORD: Record<string, string> = { artifact: 'Page: ', pr: '', repo: '', script: 'Script: ', doc: 'File: ', push: '' }
+const RESULT_WORD: Record<string, string> = { artifact: 'Page: ', pr: '', repo: '', doc: 'File: ', push: '' }
 
 // ---------------------------------------------------------------- changes by project
 
@@ -967,10 +964,6 @@ export function splitLines(s: string): string[] {
   const lines = s.split('\n')
   if (lines[lines.length - 1] === '') lines.pop()
   return lines
-}
-
-function quote(p: string): string {
-  return /^[\w@%+=:,./~-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`
 }
 
 export function clock(t: number): string {
