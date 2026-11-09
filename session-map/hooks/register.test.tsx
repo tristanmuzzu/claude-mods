@@ -377,14 +377,22 @@ test('/map opens the pane, and closes it when it is already on screen', async ($
     return { value: undefined }
   })
   on('command.run', () => ({ text: '' }))
+  const asked: string[] = []
+  on('ui.invalidate', (_: unknown, e: any) => {
+    asked.push(e.event)
+    return { value: undefined }
+  })
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   expect(panes.map(p => p.id)).toEqual(['session-map'])
 
   const run = () => ($ as any).command.run({ command: 'map', args: '' })
   expect((await run()).text).toContain('closed')
   expect(panes).toEqual([])
+  asked.length = 0
   expect((await run()).text).toContain('opened')
   expect(panes.map(p => p.id)).toEqual(['session-map'])
+  // Reopened with the same props, the pane needs a fresh render or the desktop draws nothing.
+  expect(asked).toContain('ui.render')
 })
 
 test('a new file outside git opens whole, not just the first lines kept while it was written', async ($, on) => {

@@ -82,7 +82,7 @@ export const register: Register = on => {
         isDeferred: true,
       })
       .catch(() => undefined)
-    void $.ui.open({ id: PANE, title: TITLE })
+    void openPane($, false)
     await boot($)
     return result
   })
@@ -94,7 +94,7 @@ export const register: Register = on => {
       await $.ui.close({ id: PANE })
       return { text: 'Session map closed. /map opens it again.' }
     }
-    const opened = await $.ui.open({ id: PANE, title: TITLE, focus: true })
+    const opened = await openPane($, true)
     return { text: opened.isPlaced ? 'Session map opened.' : `Session map is waiting for room: ${opened.reason}` }
   })
 
@@ -316,6 +316,19 @@ export const register: Register = on => {
       </Box>
     )
   })
+}
+
+/**
+ * Opens the pane and asks for a fresh drawing. The engine raises `ui.render` once per input
+ * value and reuses its answer after that, so a pane closed and opened again with the same props
+ * got no new render: the desktop showed "has not drawn in this pane" until the ledger next
+ * changed. The second ask covers a surface that seats the pane a moment after the open resolves.
+ */
+async function openPane($: EngineInterface, focus: boolean) {
+  const opened = await $.ui.open({ id: PANE, title: TITLE, ...(focus ? { focus: true } : {}) })
+  $.ui.invalidate('ui.render')
+  $.clock.after(400, () => $.ui.invalidate('ui.render'))
+  return opened
 }
 
 // ---------------------------------------------------------------- the Now card
