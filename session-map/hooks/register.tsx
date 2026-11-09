@@ -28,6 +28,8 @@ import {
   WAIT,
 } from './art'
 import type { Mood } from './art'
+import { colorAt, FADE_FRAME_MS, follow, isFading, svgFade } from './fade'
+import type { Fade } from './fade'
 import { ago, appChats, chatRows, noteOf, seenOf, sharedOf } from './chats'
 import type { ChatRow } from './chats'
 import { cutDiff, parseCounts, parseLog, parseNumstat, parseStatus, topOf } from './git'
@@ -116,6 +118,13 @@ let appsAt = 0
 let records: { dirs: string[] | null; byId: Record<string, { mtimeMs: number; seen: Seen | null }> } = { dirs: null, byId: {} }
 let pending: { cancel: () => void } | null = null
 let lastError = ''
+/**
+ * The Now card's colours on their way to the current mood's, and the timer that redraws while one
+ * moves. Kept here, not in $.state: a drawing may not write state, and a reload losing a fade
+ * mid-way costs nothing.
+ */
+const fades: Record<'tint' | 'border' | 'track', Fade | null> = { tint: null, border: null, track: null }
+let fadeTimer: { cancel: () => void } | null = null
 /** Turn ends heard for a turn other than the main one in progress, for the dev probe. */
 const strayEnds: string[] = []
 
@@ -282,7 +291,14 @@ export const register: Register = on => {
     const all = stories(l, now)
     const groups = changeGroups(l)
     const hero = heroOf(l, all[0] ?? null, now)
+    // `tint` is the mood's colour, for drawings that never fade; `tintNow` is where the fade to it
+    // stands, for the card's texts and border. The fading SVGs carry their own animation.
     const tint = moodColor(hero.mood)
+    fades.tint = follow(fades.tint, tint, now)
+    fades.border = follow(fades.border, hero.isLive ? tint : '#34363a', now)
+    fades.track = follow(fades.track, hero.isLive ? tint : DONE, now)
+    const tintNow = colorAt(fades.tint, now)
+    if (isFading(fades.tint, now) || isFading(fades.border, now)) startFade($)
     const plan = l.plan ?? []
     const showPlan = plan.length > 0 && l.planTurn === headTurn(l)
     const place = planPlace(plan)
@@ -315,11 +331,11 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column" gap={2} paddingY={1}>
         {/* ---------------- Now */}
-        <Box key="now" flexDirection="column" gap={1} padding={1} backgroundColor="#232427" borderStyle="round" borderColor={hero.isLive ? tint : '#34363a'}>
+        <Box key="now" flexDirection="column" gap={1} padding={1} backgroundColor="#232427" borderStyle="round" borderColor={colorAt(fades.border as Fade, now)}>
           <Box flexDirection="row" gap={1} alignItems="center">
-            {Svg ? <Svg source={glyph(hero.mood, hero.isLive)} width={56} height={56} alt={`${hero.eyebrow}: ${hero.headline}`} isInteractive /> : null}
+            {Svg ? <Svg source={glyph(hero.mood, hero.isLive, svgFade(fades.tint))} width={56} height={56} alt={`${hero.eyebrow}: ${hero.headline}`} isInteractive /> : null}
             <Box flexDirection="column" flexShrink={1} minWidth={0} gap={0}>
-              <Text size="caption" weight="bold" color={tint}>
+              <Text size="caption" weight="bold" color={tintNow}>
                 {hero.eyebrow}
               </Text>
               <Text size="heading" weight="semibold" wrap="wrap">
@@ -330,7 +346,16 @@ export const register: Register = on => {
           {showPulse && Svg ? (
             <Svg
               key="pulse"
-              source={pulse(beats, mainLive ? { kind: mainLive.kind, ms: now - mainLive.at } : null, isThinking, W, tint)}
+              source={pulse(
+                beats,
+                // Whole seconds, so the redraws of a fade leave the drawing as it was.
+                mainLive ? { kind: mainLive.kind, ms: Math.floor((now - mainLive.at) / 1000) * 1000 } : null,
+                isThinking,
+                W,
+                tint,
+                undefined,
+                isFading(fades.tint, now) ? svgFade(fades.tint) : '',
+              )}
               width={W}
               height={PULSE_H}
               alt={pulseAlt(latest)}
@@ -339,7 +364,7 @@ export const register: Register = on => {
           ) : null}
           {showPlan ? (
             <Box flexDirection="column" gap={0}>
-              {Svg ? <Svg source={track(plan, W, hero.isLive ? tint : DONE)} width={W} height={8} alt={planAlt(plan)} isInteractive /> : null}
+              {Svg ? <Svg source={track(plan, W, hero.isLive ? tint : DONE, isFading(fades.track, now) ? svgFade(fades.track) : '')} width={W} height={8} alt={planAlt(plan)} isInteractive /> : null}
               <Text size="caption" dimColor wrap="truncate-end">
                 {place.current ? `${place.index + 1} of ${place.total} · ` : `${place.done} of ${place.total} done`}
                 {place.current ? <Text color="#e6e6e6">{place.current.text}</Text> : null}
@@ -400,7 +425,7 @@ export const register: Register = on => {
                               </Button>
                             </Box>
                             {dur ? (
-                              <Text size="footnote" color={s.isNow ? tint : QUIET} tabular>
+                              <Text size="footnote" color={s.isNow ? tintNow : QUIET} tabular>
                                 {dur}
                               </Text>
                             ) : null}
@@ -1065,6 +1090,24 @@ async function restore($: EngineInterface) {
 async function startTurn($: EngineInterface, turnId: string) {
   await safely($, l => ({ ...l, isWorking: true, mainTurn: turnId, startedAt: Date.now() }))
   keepTicking($)
+}
+
+/** Redraws at the frame rate while a Now card colour fades, then once more to land on it. */
+function startFade($: EngineInterface) {
+  if (fadeTimer) return
+  try {
+    fadeTimer = $.clock.every(FADE_FRAME_MS, () => {
+      const now = Date.now()
+      if (!Object.values(fades).some(f => isFading(f, now))) {
+        fadeTimer?.cancel()
+        fadeTimer = null
+      }
+      void update($, view, x => ({ ...x, tick: x.tick + 1 })).catch(() => undefined)
+    })
+  } catch {
+    // No timer: the colour lands on the next redraw instead.
+    fadeTimer = null
+  }
 }
 
 /** Redraw every few seconds while anything runs (the turn, background work) so its times move. */

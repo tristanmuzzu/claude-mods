@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { barHeight, glyph, mark, metaLine, pulse, railNode, rings, track } from './art'
+import { colorAt, ease, FADE_MS, follow, isFading, mix, svgFade } from './fade'
 import { appChats, chatRows, cleanTitle, isUnseen, noteOf, seenOf } from './chats'
 import { cutDiff, parseCounts, parseLog, parseStatus } from './git'
 import { applyPlan, bgAfterPrompt, bgFromStop, bgStarted, changeGroups, clip, diffRows, EMPTY, fileRows, lineOf, newTurn, saidOf, place, prStatusOf, prWords, promptText, settle, stories } from './model'
@@ -749,4 +750,76 @@ test('the board lists the other chats and opens one by its link', async ($, on) 
   await press(ui, 'chat:local_b')
   expect(opened.some(a => a[a.length - 1] === 'claude://claude.ai/epitaxy/local_b')).toBe(true)
   await ui.unmount()
+})
+
+test('a mood colour fades through OKLab, and a change mid-fade starts from what is shown', () => {
+  expect(mix('#e07a52', '#a68cff', 0)).toBe('#e07a52')
+  expect(mix('#e07a52', '#a68cff', 1)).toBe('#a68cff')
+  // Orange to purple: the OKLab midpoint keeps its lightness, where plain RGB averaging dips.
+  const mid = mix('#e07a52', '#a68cff', 0.5)
+  expect(mid).not.toBe('#c383a9')
+  expect(ease(0)).toBe(0)
+  expect(ease(1)).toBe(1)
+  expect(Math.abs(ease(0.5) - 0.5)).toBeLessThan(1e-9)
+  expect(ease(0.25)).toBeLessThan(0.25)
+
+  const first = follow(null, '#e07a52', 1000)
+  expect(isFading(first, 1000)).toBe(false)
+  const f = follow(first, '#a68cff', 1000)
+  expect(f).toEqual({ from: '#e07a52', to: '#a68cff', at: 1000 })
+  expect(follow(f, '#a68cff', 1100)).toBe(f)
+  const half = colorAt(f, 1000 + FADE_MS / 2)
+  expect([f.from, f.to]).not.toContain(half)
+  expect(colorAt(f, 1000 + FADE_MS)).toBe('#a68cff')
+  // Turned back half-way: the new fade starts from the in-between colour, not from purple.
+  expect(follow(f, '#e07a52', 1000 + FADE_MS / 2).from).toBe(half)
+
+  expect(svgFade(first)).toBe('')
+  const css = svgFade(f)
+  expect(css).toContain('@keyframes')
+  expect(css).toContain('0%{color:#e07a52}')
+  expect(css).toContain('100%{color:#a68cff}')
+  const g = glyph('read', true, css)
+  expect(g).toContain('color="#a68cff"')
+  expect(g).toContain(css)
+  expect(g).not.toContain('#a68cff"/')
+})
+
+test('the Now card eases into the next mood colour instead of switching', async ($, on) => {
+  engine(on, ['clock.every'])
+  const timers: number[] = []
+  on('clock.every', (_: unknown, e: any) => {
+    timers.push(Number(e.ms ?? e.every ?? e.period ?? 0))
+    return { value: {} }
+  })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'Fade it' } as any)
+  await ($ as any).turn.start({ text: 'Fade it', turnId: 't1' })
+  const now = async () => {
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    const box = await ui.find({ type: 'Box', key: 'now' })
+    const eyebrow = (await ui.findAll({ type: 'Text' })).find((t: any) => /^(Thinking|Done)/.test(t.text))
+    const svg = (await ui.findAll({ type: 'Svg' }))[0]
+    await ui.unmount()
+    return { border: box?.props.borderColor, ink: eyebrow?.props.color, svg: String(svg?.props.source ?? '') }
+  }
+  const thinking = await now()
+  expect(thinking.border).toBe('#e07a52')
+  expect(thinking.ink).toBe('#e07a52')
+
+  await ($ as any).turn.complete({ answer: 'ok', durationMs: 5, isAborted: false, turnId: 't1', reason: 'answer' })
+  const t0 = Date.now()
+  const during = await now()
+  expect(Date.now() - t0).toBeLessThan(FADE_MS / 2)
+  {
+    // Still on the way: neither the old colour nor the new one yet, and the glyph carries the fade.
+    expect(during.ink).not.toBe('#5fd27e')
+    expect(during.border).not.toBe('#34363a')
+    expect(during.svg).toContain('@keyframes tint')
+    expect(timers).toContain(40)
+  }
+  await new Promise(r => setTimeout(r, FADE_MS + 50))
+  const after = await now()
+  expect(after.ink).toBe('#5fd27e')
+  expect(after.border).toBe('#34363a')
 })
