@@ -398,7 +398,10 @@ export const register: Register = on => {
           </Box>
           {/* Each part below is always in the tree, hidden while it has nothing to show: a part
               coming or going makes the app rebuild the frames beside it, blank for a moment. */}
-          <Box key="pulse-row" display={showPulse ? 'flex' : 'none'}>
+          {/* A column, as the plan row is: W is a guess from the pane's columns and can run past
+              the card, and only a column stretches the drawing's box to the card's inner width,
+              which caps the drawing to it. In a row the box takes the drawing's own width. */}
+          <Box key="pulse-row" flexDirection="column" display={showPulse ? 'flex' : 'none'}>
             {stacked(
               'pulse',
               pulse(

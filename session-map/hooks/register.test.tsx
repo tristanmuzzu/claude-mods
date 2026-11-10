@@ -540,6 +540,17 @@ test('pressing a request opens its story: heartbeat, recap, files and commits', 
   await ui.unmount()
 })
 
+test('the Now card lays its heartbeat and plan track out as columns, so the card caps their width', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  for (const key of ['pulse-row', 'plan-row']) {
+    const row = (await ui.find({ type: 'Box', key })) as any
+    expect(row?.props?.flexDirection).toBe('column')
+  }
+  await ui.unmount()
+})
+
 test('the heartbeat draws a bar per step, red when it failed, the running one breathing', () => {
   expect(barHeight(0)).toBe(3)
   expect(barHeight(600_000)).toBe(27)
