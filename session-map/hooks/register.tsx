@@ -53,6 +53,7 @@ import {
   headTurn,
   heldLive,
   HOLD_MS,
+  holdsUp,
   isPlumbing,
   lastN,
   lineOf,
@@ -581,9 +582,10 @@ function heroOf(l: Ledger, last: Story | null, now: number): Hero {
     const lastEnd = l.steps.reduce((m, x) => (x.agent === null && x.at >= from ? Math.max(m, x.at + x.ms) : m), from)
     return { mood: 'thinking', eyebrow: `Thinking · ${since(now - lastEnd)}`, headline: plan.current ? plan.current.text : 'Working out the next step', isLive: true }
   }
-  // The turn ended but its work goes on: say what it waits on, not "Done".
+  // The turn ended but its work goes on: say what it waits on, not "Done". A server or watcher
+  // left running is not waited on: the card says Done and lists it under "Also running".
   const after = l.isWorking ? [] : alongside(l, now)
-  const running = after.filter(b => b.kind !== 'wakeup')
+  const running = after.filter(b => b.kind !== 'wakeup' && holdsUp(b))
   if (running.length) {
     const one = running[0] as Bg
     return {
@@ -1402,7 +1404,7 @@ async function share($: EngineInterface) {
     const now = Date.now()
     const all = stories(l, now)
     const hero = heroOf(l, all[0] ?? null, now)
-    const isWaiting = !l.isWorking && alongside(l, now).length > 0
+    const isWaiting = !l.isWorking && alongside(l, now).some(holdsUp)
     const needsYou = Boolean(l.asking) || (!l.isWorking && !isWaiting && Boolean(all[0]?.ask) && all[0]?.end === 'answer')
     const note = noteOf(self.id, hero, l.isWorking, isWaiting, needsYou, all[0]?.steps ?? [], now)
     // Idle and unchanged: nothing to write. Working: write, so the others see it is alive.

@@ -18,7 +18,9 @@ Top to bottom:
   monitors, workflows and wake-ups, each with its time (not a published
   artifact's live-updates watch, which stays open but is not work). When Claude waits on
   you it says so ("Needs your answer", "Your call"); when a turn ends with work
-  still running in the background it says what it waits on; when a request
+  still running in the background it says what it waits on (a dev server or
+  file watcher left running is not waited on: the turn reads as done and the
+  server stays listed under "Also running"); when a request
   finishes, the first line of its own recap is the headline.
 - **Vitals**: rings for context before auto-compaction, the 5-hour limit,
   the weekly limit and, in the desktop app, each per-model weekly limit

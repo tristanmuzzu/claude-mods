@@ -5,7 +5,7 @@ import { colorAt, ease, FADE_MS, follow, isFading, mix } from './fade'
 import { dwell, DWELL_MS, layered, LAYER_MS, stack } from './motion'
 import { appChats, chatRows, cleanTitle, isUnseen, modelWindows, noteOf, seenOf } from './chats'
 import { cutDiff, parseCounts, parseLog, parseStatus } from './git'
-import { applyPlan, bgAfterPrompt, heldLive, HOLD_MS, bgFromStop, bgStarted, changeGroups, clip, diffRows, EMPTY, fileRows, lineOf, newTurn, saidOf, place, prStatusOf, prWords, promptText, settle, stories } from './model'
+import { applyPlan, bgAfterPrompt, heldLive, HOLD_MS, holdsUp, looksLikeService, bgFromStop, bgStarted, changeGroups, clip, diffRows, EMPTY, fileRows, lineOf, newTurn, saidOf, place, prStatusOf, prWords, promptText, settle, stories } from './model'
 
 /** A pane Button by its key without the press count the pane adds to every key (see pressKey). */
 async function button(ui: { findAll: (q: { type: string }) => Promise<{ key: string | undefined; text?: string }[]> }, key: string) {
@@ -638,6 +638,35 @@ test('background work shows in the Now card while it runs', async ($, on) => {
   expect(later.some(t => /^Waiting on background work · 1/.test(t))).toBe(true)
   expect(later.some(t => /^Done/.test(t))).toBe(false)
   await after.unmount()
+})
+
+test('a server or watcher left running is not work the session waits on', () => {
+  for (const s of ["Start the app's local dev server", 'npm run dev', 'pnpm start', 'python -m http.server 8000', 'Serve the site on localhost', 'vitest --watch', 'npx vite', 'tail -f app.log', 'docker compose up'])
+    expect(looksLikeService(s)).toBe(true)
+  for (const s of ['Render the reel', 'npm run build', 'npx vite build', 'Run the test suite', 'Observe the logs once', 'npm install'])
+    expect(looksLikeService(s)).toBe(false)
+  const dev = bgStarted('Bash', { run_in_background: true, description: 'Start the app', command: 'npm run dev' }, 'with ID: d1', 1000, 'x')
+  expect(dev?.isService).toBe(true)
+  expect(holdsUp(dev!)).toBe(false)
+  // Kept through the engine's list at Stop, and told from the label alone for entries stored before.
+  expect(bgFromStop([{ id: 'd1', type: 'shell', description: 'Start the app' }], [], [dev!], 2000)[0]?.isService).toBe(true)
+  expect(holdsUp({ id: 'o', kind: 'shell', label: "Start the app's local dev server", at: 0 })).toBe(false)
+  expect(holdsUp({ id: 'h', kind: 'helper', label: 'Watch the deploy', at: 0 })).toBe(true)
+})
+
+test('a turn that leaves only a dev server running is Done, with the server still listed', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'Start it' } as any)
+  await ($ as any).turn.start({ text: 'Start it', turnId: 't1' })
+  await $.tool.call({ tool: 'Bash', command: 'npm run dev', description: "Start the app's local dev server", run_in_background: true, tool_use_id: 'b1' } as any)
+  await ($ as any).turn.complete({ answer: 'The app is up.', durationMs: 5, isAborted: false, turnId: 't1', reason: 'answer' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const all = await texts(ui)
+  expect(all.some(t => /^Done/.test(t))).toBe(true)
+  expect(all.some(t => /^Waiting on background work/.test(t))).toBe(false)
+  expect(all.some(t => /Also running · 1/.test(t))).toBe(true)
+  await ui.unmount()
 })
 
 test('an edit outside git keeps its real line number, or none when it cannot be told', () => {

@@ -790,7 +790,8 @@ export function prStatusOf(json: string, at: number): PrStatus | null {
 export function bgStarted(tool: string, a: Record<string, unknown>, text: string, now: number, fallbackId: string): Bg | null {
   const id = /\b(?:ID|id|task[_ ]?id|agentId)[:=]\s*"?([\w-]{4,})/.exec(text)?.[1] ?? fallbackId
   if (tool === 'Bash' && a.run_in_background === true) {
-    return { id, kind: 'shell', label: str(a.description) || clip(str(a.command), 60), at: now }
+    const b: Bg = { id, kind: 'shell', label: str(a.description) || clip(str(a.command), 60), at: now }
+    return looksLikeService(`${str(a.description)} ${str(a.command)}`) ? { ...b, isService: true } : b
   }
   if ((tool === 'Agent' || tool === 'Task') && a.run_in_background === true) {
     return { id, kind: 'helper', label: str(a.description) || 'Helper', at: now }
@@ -801,6 +802,22 @@ export function bgStarted(tool: string, a: Record<string, unknown>, text: string
     return { id: 'wakeup', kind: 'wakeup', label: str(a.reason) || 'Picks the task up again', at: now, until: now + a.delaySeconds * 1000 }
   }
   return null
+}
+
+/**
+ * A command meant to keep running until someone stops it: a dev server, a preview, a file
+ * watcher, a log tail. It never ends by itself, so the turn that started it is done, not waiting.
+ */
+const SERVICE =
+  /\b(?:dev[- ]?servers?|servers?|serve|serving|localhost|127\.0\.0\.1|0\.0\.0\.0|watch(?:er|ing)?|nodemon|live-server|http-server|http\.server|webpack-dev-server|uvicorn|gunicorn|flask run|rails s(?:erver)?|tail -f|compose up|expo start|next dev|vite(?! build)|(?:npm|pnpm|bun) (?:run )?(?:dev|start|preview)|yarn (?:dev|start|preview))\b|--watch\b/i
+
+export function looksLikeService(text: string): boolean {
+  return SERVICE.test(text)
+}
+
+/** Work the session is still waiting on: anything but a command left running on purpose. */
+export function holdsUp(b: Bg): boolean {
+  return !(b.isService || (b.kind === 'shell' && looksLikeService(b.label)))
 }
 
 /** The list with one more: a wake-up replaces the one before (a session has one), anything else adds. */
@@ -830,8 +847,11 @@ export function bgFromStop(tasks: StopTask[], crons: StopCron[], was: Bg[], now:
   const out: Bg[] = []
   for (const t of tasks) {
     if (isArtifactWatch(t)) continue
-    const b: Bg = { id: str(t.id), kind: kindOf(str(t.type)), label: clip(str(t.description) || str(t.command) || str(t.name) || 'Background work', 80), at: now }
-    const old = same(b)
+    const kind = kindOf(str(t.type))
+    const fresh: Bg = { id: str(t.id), kind, label: clip(str(t.description) || str(t.command) || str(t.name) || 'Background work', 80), at: now }
+    const old = same(fresh)
+    const isService = Boolean(old?.isService) || (kind === 'shell' && looksLikeService(`${str(t.description)} ${str(t.command)}`))
+    const b: Bg = isService ? { ...fresh, isService } : fresh
     out.push(old ? { ...b, at: old.at, label: old.label || b.label } : b)
   }
   for (const c of crons) {

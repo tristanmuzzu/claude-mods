@@ -67,6 +67,8 @@ export type Bg = {
   at: number
   /** For a wake-up: when it fires, when known. */
   until?: number | null
+  /** A command left running on purpose (a dev server, a watcher): nothing waits on it to end. */
+  isService?: boolean
 }
 
 /** A call still running. */
